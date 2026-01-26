@@ -28,11 +28,11 @@ export const LoginForm = () => {
         base_url: ipAddress || undefined
       });
 
-      if (response.data.success) {
+      if (response.success) {
         // 登录成功，跳转到Dashboard页面
         navigate('/dashboard');
       } else {
-        setError(response.data.message);
+        setError(response.message);
       }
     } catch (err: any) {
       setError(err.message || '连接测试失败，请重试');
