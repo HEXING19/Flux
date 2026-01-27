@@ -284,31 +284,48 @@ class LLMService:
             user_message = last_message.get("content", "")
 
             if not user_message:
-                return await self.chat(messages, provider, api_key, base_url)
+                chat_result = await self.chat(messages, provider, api_key, base_url)
+                chat_result["type"] = "text"
+                return chat_result
 
             # Step 1: 检测意图
-            intent_result = await self._detect_intent(
-                user_message, provider, api_key, base_url
-            )
+            try:
+                intent_result = await self._detect_intent(
+                    user_message, provider, api_key, base_url
+                )
+            except Exception:
+                # 意图检测失败，按普通聊天处理
+                chat_result = await self.chat(messages, provider, api_key, base_url)
+                chat_result["type"] = "text"
+                return chat_result
 
             intent = intent_result.get("intent", "general_chat")
             confidence = intent_result.get("confidence", 0.0)
 
             # 如果不是添加资产的意图，或者置信度太低，按普通聊天处理
             if intent != "add_asset" or confidence < 0.7:
-                return await self.chat(messages, provider, api_key, base_url)
+                chat_result = await self.chat(messages, provider, api_key, base_url)
+                chat_result["type"] = "text"
+                return chat_result
 
             # Step 2: 提取资产参数
-            extracted_params = await self._extract_asset_params(
-                user_message, messages, provider, api_key, base_url
-            )
+            try:
+                extracted_params = await self._extract_asset_params(
+                    user_message, messages, provider, api_key, base_url
+                )
+            except Exception:
+                # 参数提取失败，按普通聊天处理
+                chat_result = await self.chat(messages, provider, api_key, base_url)
+                chat_result["type"] = "text"
+                return chat_result
 
             # Step 3: 使用 AssetService 验证和补充参数
             from .asset_service import AssetService
 
             if not auth_code or not flux_base_url:
                 return {
-                    "success": False,
+                    "success": True,
+                    "type": "text",
                     "message": "缺少 Flux 认证信息。请先登录系统。"
                 }
 
@@ -330,40 +347,34 @@ class LLMService:
             # 检查必填字段
             if "ip" not in validated_params or not validated_params["ip"]:
                 return {
-                    "success": False,
+                    "success": True,
+                    "type": "text",
                     "message": "我识别到您想添加资产，但是没有找到 IP 地址。请提供 IP 地址。"
                 }
 
-            # Step 4: 格式化确认信息
-            confirmation_msg = self._format_confirmation_message(validated_params)
-
-            # Step 5: 创建资产
-            create_result = asset_service.create_asset(validated_params)
-
-            if create_result.get("success"):
-                result_msg = f"{confirmation_msg}\n\n✅ 资产添加成功！\n\n{self._format_asset_result(validated_params)}"
-            else:
-                error_msg = create_result.get('message', '未知错误')
-
-                # 处理常见错误
-                if "已存在资产" in error_msg or "already exists" in error_msg.lower():
-                    ip = validated_params.get("ip", "未知")
-                    result_msg = f"{confirmation_msg}\n\n⚠️ 资产已存在\n\nIP 地址 {ip} 的资产已经在系统中存在。\n\n如果您想更新该资产，请使用其他命令。"
-                elif "Invalid IP" in error_msg:
-                    result_msg = f"{confirmation_msg}\n\n❌ IP 地址格式无效\n\n请提供有效的 IP 地址（如：192.168.1.100）"
-                elif "认证" in error_msg or "auth" in error_msg.lower():
-                    result_msg = f"❌ 认证失败\n\n请确认您已登录系统，并且联动码有效。"
-                else:
-                    result_msg = f"{confirmation_msg}\n\n❌ 添加失败\n\n错误信息：{error_msg}"
+            # Step 4: 返回确认信息（不直接创建资产）
+            confirmation_msg = "我识别到您想添加一个资产。请确认以下信息："
 
             return {
                 "success": True,
-                "message": result_msg
+                "type": "asset_confirmation",
+                "message": confirmation_msg,
+                "asset_params": validated_params
             }
 
         except Exception as e:
-            # 如果资产添加失败，回退到普通聊天
-            return await self.chat(messages, provider, api_key, base_url)
+            # 任何错误都回退到普通聊天
+            try:
+                chat_result = await self.chat(messages, provider, api_key, base_url)
+                chat_result["type"] = "text"
+                return chat_result
+            except Exception as chat_error:
+                # 如果聊天也失败了，返回错误信息
+                return {
+                    "success": False,
+                    "type": "text",
+                    "message": f"抱歉，我现在无法回复：{str(e)}"
+                }
 
     async def _detect_intent(
         self,

@@ -18,12 +18,18 @@ import {
   Analytics,
   Settings,
 } from '@mui/icons-material';
+import { AssetConfirmationDialog } from './AssetConfirmationDialog';
+import { AssetSummaryTable } from './AssetSummaryTable';
+import type { AssetParams } from '../../types/asset';
+import type { AssetSummary } from '../../types/asset';
 
 interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
+  type?: 'text' | 'asset_summary';
+  data?: AssetSummary;
 }
 
 interface QuickAction {
@@ -75,6 +81,11 @@ export const ChatInterface = () => {
   const [loading, setLoading] = useState(false);
   const [conversationId, setConversationId] = useState<string>(Date.now().toString());
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // 资产确认对话框状态
+  const [confirmationOpen, setConfirmationOpen] = useState(false);
+  const [pendingParams, setPendingParams] = useState<AssetParams | null>(null);
+  const [confirming, setConfirming] = useState(false);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -149,14 +160,31 @@ export const ChatInterface = () => {
 
       const data = await response.json();
 
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: data.message || '抱歉,我现在无法回复。',
-        timestamp: new Date(),
-      };
+      // 检查响应类型
+      if (data.type === 'asset_confirmation' && data.asset_params) {
+        // 打开确认对话框
+        setPendingParams(data.asset_params);
+        setConfirmationOpen(true);
 
-      setMessages((prev) => [...prev, assistantMessage]);
+        // 添加临时消息
+        const tempMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: data.message || '请确认资产信息',
+          timestamp: new Date(),
+        };
+        setMessages((prev) => [...prev, tempMessage]);
+      } else {
+        // 普通消息
+        const assistantMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: data.message || '抱歉,我现在无法回复。',
+          timestamp: new Date(),
+        };
+
+        setMessages((prev) => [...prev, assistantMessage]);
+      }
     } catch (error: any) {
       const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
@@ -175,6 +203,77 @@ export const ChatInterface = () => {
       e.preventDefault();
       handleSend();
     }
+  };
+
+  // 处理资产确认
+  const handleAssetConfirm = async (updatedParams: AssetParams) => {
+    setConfirming(true);
+
+    try {
+      const fluxAuthCode = localStorage.getItem('flux_auth_code');
+      const fluxBaseUrl = localStorage.getItem('flux_base_url');
+
+      if (!fluxAuthCode || !fluxBaseUrl) {
+        throw new Error('缺少 Flux 认证信息，请先登录');
+      }
+
+      const response = await fetch('http://localhost:8000/api/v1/llm/confirm-asset', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          params: updatedParams,
+          auth_code: fluxAuthCode,
+          flux_base_url: fluxBaseUrl,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('API请求失败');
+      }
+
+      const result = await response.json();
+
+      // 添加结果消息
+      const resultMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: result.message || (result.success ? '✅ 资产添加成功！' : '❌ 添加失败'),
+        timestamp: new Date(),
+        type: result.success ? 'asset_summary' : 'text',
+        data: result.success ? result.asset_data : undefined,
+      };
+
+      setMessages((prev) => [...prev, resultMessage]);
+      setConfirmationOpen(false);
+    } catch (error: any) {
+      const errorMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: `❌ 添加失败：${error.message}`,
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+    } finally {
+      setConfirming(false);
+    }
+  };
+
+  // 处理取消
+  const handleAssetCancel = () => {
+    setConfirmationOpen(false);
+    setPendingParams(null);
+
+    // 添加取消消息
+    const cancelMessage: Message = {
+      id: (Date.now() + 1).toString(),
+      role: 'assistant',
+      content: '已取消添加资产。',
+      timestamp: new Date(),
+    };
+
+    setMessages((prev) => [...prev, cancelMessage]);
   };
 
   const handleQuickAction = (prompt: string) => {
@@ -226,15 +325,20 @@ export const ChatInterface = () => {
                   <Paper
                     elevation={0}
                     sx={{
-                      p: 2,
+                      p: message.type === 'asset_summary' ? 2 : 2,
                       borderRadius: 2,
                       bgcolor: message.role === 'user' ? 'primary.main' : 'grey.100',
                       color: message.role === 'user' ? 'white' : 'text.primary',
+                      minWidth: message.type === 'asset_summary' ? '400px' : 'auto',
                     }}
                   >
-                    <Typography variant="body2" sx={{ lineHeight: 1.6 }}>
-                      {message.content}
-                    </Typography>
+                    {message.type === 'asset_summary' && message.data ? (
+                      <AssetSummaryTable data={message.data} />
+                    ) : (
+                      <Typography variant="body2" sx={{ lineHeight: 1.6 }}>
+                        {message.content}
+                      </Typography>
+                    )}
                   </Paper>
                 </Tooltip>
 
@@ -388,6 +492,15 @@ export const ChatInterface = () => {
           </Stack>
         </Box>
       </Box>
+
+      {/* 资产确认对话框 */}
+      <AssetConfirmationDialog
+        open={confirmationOpen}
+        params={pendingParams}
+        onConfirm={handleAssetConfirm}
+        onCancel={handleAssetCancel}
+        loading={confirming}
+      />
     </Box>
   );
 };

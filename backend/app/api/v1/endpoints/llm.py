@@ -38,6 +38,8 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     success: bool
     message: str
+    type: Optional[str] = "text"  # "text" | "asset_confirmation"
+    asset_params: Optional[dict] = None  # 资产参数（用于确认对话框）
 
 
 @router.post("/test", response_model=LLMTestResponse)
@@ -97,6 +99,78 @@ async def chat_with_llm(request: ChatRequest):
     )
 
     return ChatResponse(**result)
+
+
+class AssetConfirmRequest(BaseModel):
+    """Request model for confirming asset creation"""
+    params: dict
+    auth_code: str
+    flux_base_url: str
+
+
+@router.post("/confirm-asset")
+async def confirm_asset_creation(request: AssetConfirmRequest):
+    """
+    Confirm and create asset after user approval
+
+    Args:
+        request: Contains asset parameters and authentication info
+
+    Returns:
+        Asset creation result
+    """
+    from ....services.asset_service import AssetService
+
+    try:
+        # Create asset service
+        asset_service = AssetService(
+            base_url=request.flux_base_url,
+            auth_code=request.auth_code
+        )
+
+        # Create asset
+        result = asset_service.create_asset(request.params)
+
+        # Format response
+        if result.get("success"):
+            return {
+                "success": True,
+                "message": "✅ 资产添加成功！",
+                "type": "asset_summary",
+                "asset_data": {
+                    "ip": request.params.get("ip"),
+                    "assetName": request.params.get("assetName"),
+                    "type": request.params.get("type"),
+                    "classify1Id": request.params.get("classify1Id"),
+                    "classifyId": request.params.get("classifyId"),
+                    "magnitude": request.params.get("magnitude"),
+                    "branchId": request.params.get("branchId"),
+                }
+            }
+        else:
+            error_msg = result.get('message', '未知错误')
+
+            # Handle common errors
+            if "已存在资产" in error_msg or "already exists" in error_msg.lower():
+                ip = request.params.get("ip", "未知")
+                return {
+                    "success": False,
+                    "message": f"⚠️ 资产已存在\n\nIP 地址 {ip} 的资产已经在系统中存在。",
+                    "type": "text"
+                }
+            else:
+                return {
+                    "success": False,
+                    "message": f"❌ 添加失败：{error_msg}",
+                    "type": "text"
+                }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"❌ 添加失败：{str(e)}",
+            "type": "text"
+        }
 
 
 @router.get("/providers")
