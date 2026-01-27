@@ -1,5 +1,7 @@
 import os
 import httpx
+import json
+import re
 from typing import Optional, Dict, Any, List
 
 
@@ -240,3 +242,302 @@ class LLMService:
             key: config["name"]
             for key, config in self.providers.items()
         }
+
+    async def chat_with_asset_support(
+        self,
+        messages: List[Dict[str, str]],
+        provider: str,
+        api_key: str,
+        base_url: Optional[str] = None,
+        auth_code: Optional[str] = None,
+        flux_base_url: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        支持资产添加的聊天功能
+
+        流程：
+        1. 获取最后一条用户消息
+        2. 使用 LLM 检测意图（添加资产 vs 普通聊天）
+        3. 如果是添加资产：
+           a. 使用 LLM 提取资产参数
+           b. 使用 AssetService 验证和补充参数
+           c. 调用资产创建 API
+           d. 返回结果
+        4. 如果是普通聊天：
+           a. 正常调用 LLM
+           b. 返回回复
+
+        Args:
+            messages: 对话历史
+            provider: LLM 提供商
+            api_key: LLM API 密钥
+            base_url: LLM API 基础 URL
+            auth_code: Flux 认证码
+            flux_base_url: Flux API 基础 URL
+
+        Returns:
+            对话响应结果
+        """
+        try:
+            # 获取最后一条用户消息
+            last_message = messages[-1] if messages else {}
+            user_message = last_message.get("content", "")
+
+            if not user_message:
+                return await self.chat(messages, provider, api_key, base_url)
+
+            # Step 1: 检测意图
+            intent_result = await self._detect_intent(
+                user_message, provider, api_key, base_url
+            )
+
+            intent = intent_result.get("intent", "general_chat")
+            confidence = intent_result.get("confidence", 0.0)
+
+            # 如果不是添加资产的意图，或者置信度太低，按普通聊天处理
+            if intent != "add_asset" or confidence < 0.7:
+                return await self.chat(messages, provider, api_key, base_url)
+
+            # Step 2: 提取资产参数
+            extracted_params = await self._extract_asset_params(
+                user_message, messages, provider, api_key, base_url
+            )
+
+            # Step 3: 使用 AssetService 验证和补充参数
+            from .asset_service import AssetService
+
+            if not auth_code or not flux_base_url:
+                return {
+                    "success": False,
+                    "message": "缺少 Flux 认证信息。请先登录系统。"
+                }
+
+            asset_service = AssetService(
+                base_url=flux_base_url,
+                auth_code=auth_code
+            )
+
+            # 验证和补充参数
+            validated_params = asset_service.infer_parameters(
+                text=user_message,
+                provided_params=extracted_params
+            )
+
+            # 设置默认 branchId
+            if "branchId" not in validated_params:
+                validated_params["branchId"] = 0
+
+            # 检查必填字段
+            if "ip" not in validated_params or not validated_params["ip"]:
+                return {
+                    "success": False,
+                    "message": "我识别到您想添加资产，但是没有找到 IP 地址。请提供 IP 地址。"
+                }
+
+            # Step 4: 格式化确认信息
+            confirmation_msg = self._format_confirmation_message(validated_params)
+
+            # Step 5: 创建资产
+            create_result = asset_service.create_asset(validated_params)
+
+            if create_result.get("success"):
+                result_msg = f"{confirmation_msg}\n\n✅ 资产添加成功！\n\n{self._format_asset_result(validated_params)}"
+            else:
+                error_msg = create_result.get('message', '未知错误')
+
+                # 处理常见错误
+                if "已存在资产" in error_msg or "already exists" in error_msg.lower():
+                    ip = validated_params.get("ip", "未知")
+                    result_msg = f"{confirmation_msg}\n\n⚠️ 资产已存在\n\nIP 地址 {ip} 的资产已经在系统中存在。\n\n如果您想更新该资产，请使用其他命令。"
+                elif "Invalid IP" in error_msg:
+                    result_msg = f"{confirmation_msg}\n\n❌ IP 地址格式无效\n\n请提供有效的 IP 地址（如：192.168.1.100）"
+                elif "认证" in error_msg or "auth" in error_msg.lower():
+                    result_msg = f"❌ 认证失败\n\n请确认您已登录系统，并且联动码有效。"
+                else:
+                    result_msg = f"{confirmation_msg}\n\n❌ 添加失败\n\n错误信息：{error_msg}"
+
+            return {
+                "success": True,
+                "message": result_msg
+            }
+
+        except Exception as e:
+            # 如果资产添加失败，回退到普通聊天
+            return await self.chat(messages, provider, api_key, base_url)
+
+    async def _detect_intent(
+        self,
+        user_message: str,
+        provider: str,
+        api_key: str,
+        base_url: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """检测用户意图"""
+        intent_prompt = f"""你是一个意图识别助手。判断用户消息是否是要添加资产到安全平台。
+
+用户消息: {user_message}
+
+分析用户是否想要：
+- 添加新资产
+- 创建新服务器
+- 注册新设备
+
+返回 JSON 格式（只返回 JSON，不要其他内容）:
+{{
+  "intent": "add_asset" | "general_chat",
+  "confidence": 0.0-1.0,
+  "reasoning": "判断理由"
+}}"""
+
+        try:
+            response = await self.chat(
+                messages=[{"role": "user", "content": intent_prompt}],
+                provider=provider,
+                api_key=api_key,
+                base_url=base_url
+            )
+
+            if response.get("success"):
+                # 解析 LLM 返回的 JSON
+                response_text = response.get("message", "")
+
+                # 尝试提取 JSON
+                json_match = re.search(r'\{[^}]+\}', response_text, re.DOTALL)
+                if json_match:
+                    try:
+                        intent_result = json.loads(json_match.group())
+                        return intent_result
+                    except json.JSONDecodeError:
+                        pass
+
+            return {"intent": "general_chat", "confidence": 0.0}
+
+        except Exception:
+            return {"intent": "general_chat", "confidence": 0.0}
+
+    async def _extract_asset_params(
+        self,
+        user_message: str,
+        messages: List[Dict[str, str]],
+        provider: str,
+        api_key: str,
+        base_url: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """从用户消息中提取资产参数"""
+        # 格式化对话历史
+        history_text = "\n".join([
+            f"{msg.get('role', 'user')}: {msg.get('content', '')}"
+            for msg in messages[-5:]  # 只使用最近 5 条消息
+        ])
+
+        extraction_prompt = f"""你是一个资产参数提取助手。从用户消息中提取资产信息。
+
+用户消息: {user_message}
+对话历史: {history_text}
+
+请提取以下信息：
+- ip: IP地址（必填）
+- assetName: 资产名称
+- type: 操作系统类型（Linux/Windows/OS X/iOS/Android/Unknown）
+- classify1Id: 一级分类（0=未知, 1=服务器, 2=终端, 5=网络设备, 6=IoT, 7=移动设备, 8=安全设备）
+- classifyId: 详细分类（如 100012=Web服务器, 100010=数据库）
+- magnitude: 重要级别（normal/core）
+- mac: MAC地址
+- hostName: 主机名
+- tags: 标签数组
+- comment: 备注
+
+返回 JSON 格式（只返回 JSON，不要其他内容）:
+{{
+  "ip": "192.168.1.100" | null,
+  "assetName": "Web Server 1" | null,
+  "type": "Linux" | null,
+  "classify1Id": 1 | 0,
+  "classifyId": 100012 | 100000,
+  "magnitude": "normal" | "core",
+  "mac": "fe:fc:fe:d7:04:91" | null,
+  "hostName": "web-01.example.com" | null,
+  "tags": ["production", "web"] | [],
+  "comment": "Main web server" | null
+}}"""
+
+        try:
+            response = await self.chat(
+                messages=[{"role": "user", "content": extraction_prompt}],
+                provider=provider,
+                api_key=api_key,
+                base_url=base_url
+            )
+
+            if response.get("success"):
+                response_text = response.get("message", "")
+
+                # 尝试提取 JSON
+                json_match = re.search(r'\{[^}]+\}', response_text, re.DOTALL)
+                if json_match:
+                    try:
+                        params = json.loads(json_match.group())
+                        return params
+                    except json.JSONDecodeError:
+                        pass
+
+            return {}
+
+        except Exception:
+            return {}
+
+    def _format_confirmation_message(self, params: Dict[str, Any]) -> str:
+        """格式化确认信息"""
+        lines = ["我识别到您想添加一个资产。我已经提取了以下信息：\n"]
+
+        if "ip" in params:
+            lines.append(f"• IP 地址: {params['ip']}")
+
+        if "assetName" in params and params["assetName"]:
+            lines.append(f"• 资产名称: {params['assetName']}")
+
+        if "type" in params and params["type"] and params["type"] != "Unknown":
+            lines.append(f"• 操作系统: {params['type']}")
+
+        if "classify1Id" in params:
+            category_names = {
+                0: "未知", 1: "服务器", 2: "终端", 5: "网络设备",
+                6: "IoT设备", 7: "移动设备", 8: "安全设备"
+            }
+            category = category_names.get(params["classify1Id"], "未知")
+            lines.append(f"• 资产分类: {category}")
+
+        if "magnitude" in params:
+            magnitude_text = "核心" if params["magnitude"] == "core" else "普通"
+            lines.append(f"• 重要级别: {magnitude_text}")
+
+        if "branchId" in params:
+            lines.append(f"• 资产组: {params['branchId']}")
+
+        return "\n".join(lines)
+
+    def _format_asset_result(self, params: Dict[str, Any]) -> str:
+        """格式化资产创建结果"""
+        lines = ["资产信息：\n"]
+
+        if "ip" in params:
+            lines.append(f"• IP: {params['ip']}")
+
+        if "assetName" in params and params["assetName"]:
+            lines.append(f"• 名称: {params['assetName']}")
+
+        if "type" in params and params["type"]:
+            lines.append(f"• 类型: {params['type']}")
+
+        if "classify1Id" in params:
+            category_names = {
+                0: "未知", 1: "服务器", 2: "终端", 5: "网络设备",
+                6: "IoT设备", 7: "移动设备", 8: "安全设备"
+            }
+            category = category_names.get(params["classify1Id"], "未知")
+            lines.append(f"• 分类: {category}")
+
+        if "branchId" in params:
+            lines.append(f"• 资产组: {params['branchId']}")
+
+        return "\n".join(lines)

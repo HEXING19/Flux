@@ -120,6 +120,10 @@ export const ChatInterface = () => {
 
       const llmConfig = JSON.parse(llmConfigStr);
 
+      // 获取Flux认证信息
+      const fluxAuthCode = localStorage.getItem('flux_auth_code');
+      const fluxBaseUrl = localStorage.getItem('flux_base_url');
+
       // 调用后端API
       const response = await fetch('http://localhost:8000/api/v1/llm/chat', {
         method: 'POST',
@@ -134,6 +138,8 @@ export const ChatInterface = () => {
           provider: llmConfig.provider,
           api_key: llmConfig.apiKey,
           base_url: llmConfig.baseUrl,
+          auth_code: fluxAuthCode,  // 新增：Flux认证码
+          flux_base_url: fluxBaseUrl,  // 新增：Flux API地址
         }),
       });
 

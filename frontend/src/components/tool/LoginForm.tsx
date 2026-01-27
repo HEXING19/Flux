@@ -29,7 +29,11 @@ export const LoginForm = () => {
       });
 
       if (response.success) {
-        // 登录成功，跳转到Dashboard页面
+        // 登录成功，保存认证信息到 localStorage
+        const baseUrl = ipAddress || 'https://10.5.41.194';
+        localStorage.setItem('flux_auth_code', authCode);
+        localStorage.setItem('flux_base_url', baseUrl);
+        // 跳转到Dashboard页面
         navigate('/dashboard');
       } else {
         setError(response.message);

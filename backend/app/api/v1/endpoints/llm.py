@@ -31,6 +31,8 @@ class ChatRequest(BaseModel):
     provider: str
     api_key: str
     base_url: Optional[str] = None
+    auth_code: Optional[str] = None  # Flux auth code for asset operations
+    flux_base_url: Optional[str] = None  # Flux API base URL
 
 
 class ChatResponse(BaseModel):
@@ -64,10 +66,10 @@ async def test_llm_connection(request: LLMTestRequest):
 @router.post("/chat", response_model=ChatResponse)
 async def chat_with_llm(request: ChatRequest):
     """
-    与大模型进行对话
+    与大模型进行对话（支持资产添加）
 
     Args:
-        request: 包含对话历史、提供商、API Key和可选的Base URL
+        request: 包含对话历史、提供商、API Key、可选的Base URL和认证信息
 
     Returns:
         对话响应
@@ -84,11 +86,14 @@ async def chat_with_llm(request: ChatRequest):
         for msg in request.messages
     ]
 
-    result = await llm_service.chat(
+    # 调用支持资产添加的聊天方法
+    result = await llm_service.chat_with_asset_support(
         messages=messages,
         provider=request.provider,
         api_key=request.api_key,
-        base_url=request.base_url
+        base_url=request.base_url,
+        auth_code=request.auth_code,
+        flux_base_url=request.flux_base_url
     )
 
     return ChatResponse(**result)

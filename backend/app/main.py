@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.v1.endpoints import auth, connectivity, llm
+from app.api.v1.endpoints import auth, connectivity, llm, assets
 
 
 app = FastAPI(
@@ -22,6 +22,7 @@ app.add_middleware(
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["认证"])
 app.include_router(connectivity.router, prefix="/api/v1/connectivity", tags=["连通性测试"])
 app.include_router(llm.router, prefix="/api/v1/llm", tags=["大模型"])
+app.include_router(assets.router, prefix="/api/v1/assets", tags=["资产管理"])
 
 
 @app.get("/")
