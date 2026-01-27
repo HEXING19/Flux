@@ -22,9 +22,10 @@ import { AssetConfirmationDialog } from './AssetConfirmationDialog';
 import { AssetSummaryTable } from './AssetSummaryTable';
 import { IPBlockConfirmationDialog } from './IPBlockConfirmationDialog';
 import { IPBlockStatusTable } from './IPBlockStatusTable';
+import { IPBlockSummaryTable } from './IPBlockSummaryTable';
 import type { AssetParams } from '../../types/asset';
 import type { AssetSummary } from '../../types/asset';
-import type { IPBlockParams, IPBlockStatus } from '../../types/ipblock';
+import type { IPBlockParams, IPBlockStatus, IPBlockSummary } from '../../types/ipblock';
 import { parseErrorResponse, formatChatMessage, isStructuredError } from '../../utils/errorHelper';
 
 interface Message {
@@ -32,8 +33,8 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
-  type?: 'text' | 'asset_summary' | 'ipblock_status';
-  data?: AssetSummary | IPBlockStatus;
+  type?: 'text' | 'asset_summary' | 'ipblock_status' | 'ipblock_summary';
+  data?: AssetSummary | IPBlockStatus | IPBlockSummary;
 }
 
 interface QuickAction {
@@ -365,13 +366,27 @@ export const ChatInterface = () => {
       let resultMessage: Message;
 
       if (result.success) {
-        // 成功封禁
+        // 成功封禁 - 创建摘要数据
+        const summaryData: IPBlockSummary = {
+          ip: pendingIPBlockParams.ip,
+          device_name: pendingIPBlockParams.device_name,
+          device_type: pendingIPBlockParams.device_type,
+          block_type: pendingIPBlockParams.block_type,
+          time_type: pendingIPBlockParams.time_type,
+          time_value: pendingIPBlockParams.time_value,
+          time_unit: pendingIPBlockParams.time_unit,
+          reason: pendingIPBlockParams.reason,
+          rule_count: result.data?.rule_count || 0,
+          timestamp: Date.now(),
+        };
+
         resultMessage = {
           id: (Date.now() + 1).toString(),
           role: 'assistant',
-          content: result.message || '✅ IP封禁成功！',
+          content: pendingIPBlockParams.ip,
           timestamp: new Date(),
-          type: 'text',
+          type: 'ipblock_summary',
+          data: summaryData,
         };
       } else {
         // 处理错误
@@ -470,17 +485,19 @@ export const ChatInterface = () => {
                   <Paper
                     elevation={0}
                     sx={{
-                      p: message.type === 'asset_summary' || message.type === 'ipblock_status' ? 2 : 2,
+                      p: message.type === 'asset_summary' || message.type === 'ipblock_status' || message.type === 'ipblock_summary' ? 2 : 2,
                       borderRadius: 2,
                       bgcolor: message.role === 'user' ? 'primary.main' : 'grey.100',
                       color: message.role === 'user' ? 'white' : 'text.primary',
-                      minWidth: message.type === 'asset_summary' || message.type === 'ipblock_status' ? '400px' : 'auto',
+                      minWidth: message.type === 'asset_summary' || message.type === 'ipblock_status' || message.type === 'ipblock_summary' ? '400px' : 'auto',
                     }}
                   >
                     {message.type === 'asset_summary' && message.data ? (
                       <AssetSummaryTable data={message.data as AssetSummary} />
                     ) : message.type === 'ipblock_status' && message.data ? (
                       <IPBlockStatusTable status={message.data as IPBlockStatus} ip={message.content} />
+                    ) : message.type === 'ipblock_summary' && message.data ? (
+                      <IPBlockSummaryTable data={message.data as IPBlockSummary} />
                     ) : (
                       <Typography variant="body2" sx={{ lineHeight: 1.6 }}>
                         {message.content}

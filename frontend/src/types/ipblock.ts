@@ -130,3 +130,16 @@ export interface IPBlockStatusTableProps {
   status: IPBlockStatus;
   ip: string;
 }
+
+export interface IPBlockSummary {
+  ip: string;
+  device_name: string;
+  device_type: string;
+  block_type: string;
+  time_type: string;
+  time_value?: number;
+  time_unit: string;
+  reason?: string;
+  rule_count: number;
+  timestamp: number;
+}
