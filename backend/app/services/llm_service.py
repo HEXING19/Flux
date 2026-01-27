@@ -319,6 +319,21 @@ class LLMService:
                     user_message, messages, provider, api_key, base_url,
                     auth_code, flux_base_url
                 )
+            elif intent == "get_incidents":
+                return await self._handle_get_incidents_intent(
+                    user_message, messages, provider, api_key, base_url,
+                    auth_code, flux_base_url
+                )
+            elif intent == "get_incident_proof":
+                return await self._handle_get_incident_proof_intent(
+                    user_message, messages, provider, api_key, base_url,
+                    auth_code, flux_base_url
+                )
+            elif intent == "update_incident_status":
+                return await self._handle_update_incident_status_intent(
+                    user_message, messages, provider, api_key, base_url,
+                    auth_code, flux_base_url
+                )
             else:
                 # 普通聊天
                 chat_result = await self.chat(messages, provider, api_key, base_url)
@@ -352,13 +367,16 @@ class LLMService:
 用户消息: {user_message}
 
 分析用户是否想要：
-1. 添加资产 - 添加新资产、创建新服务器、注册新设备
-2. IP封禁 - 查询IP封禁状态、封禁IP地址、检查并封禁IP
-3. 普通聊天 - 其他对话
+1. 添加资产 (add_asset) - 添加新资产、创建新服务器、注册新设备
+2. IP封禁 (ipblock) - 查询IP封禁状态、封禁IP地址、检查并封禁IP
+3. 查询安全事件 (get_incidents) - 查询事件列表、查看安全事件、找事件、显示事件
+4. 查看事件详情 (get_incident_proof) - 查看事件详情、查看举证、查看攻击链、查看事件证据
+5. 更新事件状态 (update_incident_status) - 标记事件状态、处置事件、修改处置状态、批量更新
+6. 普通聊天 (general_chat) - 其他对话
 
 返回 JSON 格式（只返回 JSON，不要其他内容）:
 {{
-  "intent": "add_asset" | "ipblock" | "general_chat",
+  "intent": "add_asset" | "ipblock" | "get_incidents" | "get_incident_proof" | "update_incident_status" | "general_chat",
   "confidence": 0.0-1.0,
   "reasoning": "判断理由"
 }}"""
@@ -773,6 +791,554 @@ class LLMService:
                         pass
 
             # 如果解析失败，返回空参数
+            return {}
+
+        except Exception:
+            return {}
+
+    async def _handle_get_incidents_intent(
+        self,
+        user_message: str,
+        messages: List[Dict[str, str]],
+        provider: str,
+        api_key: str,
+        base_url: Optional[str] = None,
+        auth_code: Optional[str] = None,
+        flux_base_url: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """处理查询安全事件意图"""
+        try:
+            # 提取查询参数
+            extracted_params = await self._extract_incidents_params(
+                user_message, messages, provider, api_key, base_url
+            )
+        except Exception as e:
+            # 参数提取失败，按普通聊天处理
+            chat_result = await self.chat(messages, provider, api_key, base_url)
+            chat_result["type"] = "text"
+            return chat_result
+
+        # 使用 SecurityIncidentsService
+        from .security_incidents_service import SecurityIncidentsService
+
+        if not auth_code or not flux_base_url:
+            return {
+                "success": True,
+                "type": "text",
+                "message": "缺少 Flux 认证信息。请先登录系统。"
+            }
+
+        incidents_service = SecurityIncidentsService()
+
+        # 调用查询接口
+        result = await incidents_service.get_incidents(
+            auth_code=auth_code,
+            base_url=flux_base_url,
+            **extracted_params
+        )
+
+        if result.get("success"):
+            data = result.get("data", {})
+            total = data.get("total", 0)
+            items = data.get("item", [])
+
+            return {
+                "success": True,
+                "type": "incidents_list",
+                "message": f"查询成功！找到 {total} 条安全事件。",
+                "incidents_data": {
+                    "total": total,
+                    "items": items
+                }
+            }
+        else:
+            return {
+                "success": True,
+                "type": "text",
+                "message": f"查询失败：{result.get('message', '未知错误')}"
+            }
+
+    async def _handle_get_incident_proof_intent(
+        self,
+        user_message: str,
+        messages: List[Dict[str, str]],
+        provider: str,
+        api_key: str,
+        base_url: Optional[str] = None,
+        auth_code: Optional[str] = None,
+        flux_base_url: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """处理查看事件举证意图"""
+        try:
+            # 提取事件ID
+            extracted_params = await self._extract_incident_proof_params(
+                user_message, messages, provider, api_key, base_url
+            )
+        except Exception as e:
+            # 参数提取失败，按普通聊天处理
+            chat_result = await self.chat(messages, provider, api_key, base_url)
+            chat_result["type"] = "text"
+            return chat_result
+
+        uuid = extracted_params.get("uuid")
+        name = extracted_params.get("name")
+
+        # If name is provided but no UUID, search for it
+        if not uuid and name:
+            if not auth_code or not flux_base_url:
+                return {
+                    "success": True,
+                    "type": "text",
+                    "message": "缺少 Flux 认证信息。请先登录系统。"
+                }
+
+            # Search incident by name
+            uuid = await self._search_incident_by_name(
+                name=name,
+                auth_code=auth_code,
+                flux_base_url=flux_base_url
+            )
+
+            if not uuid:
+                return {
+                    "success": True,
+                    "type": "text",
+                    "message": f"未找到名称为 '{name}' 的安全事件。请确认事件名称是否正确，或先查询事件列表。"
+                }
+
+        # If still no UUID, ask user to provide it
+        if not uuid:
+            return {
+                "success": True,
+                "type": "text",
+                "message": "我识别到您想查看事件详情，但没有找到事件ID。请提供事件ID（格式：incident-xxx）或事件名称。"
+            }
+
+        # 使用 SecurityIncidentsService
+        from .security_incidents_service import SecurityIncidentsService
+
+        if not auth_code or not flux_base_url:
+            return {
+                "success": True,
+                "type": "text",
+                "message": "缺少 Flux 认证信息。请先登录系统。"
+            }
+
+        incidents_service = SecurityIncidentsService()
+
+        # 调用举证查询接口
+        result = await incidents_service.get_incident_proof(
+            auth_code=auth_code,
+            base_url=flux_base_url,
+            uuid=uuid
+        )
+
+        if result.get("success"):
+            data = result.get("data", {})
+
+            return {
+                "success": True,
+                "type": "incident_proof",
+                "message": f"事件详情：{data.get('name', '未知')}",
+                "proof_data": data
+            }
+        else:
+            return {
+                "success": True,
+                "type": "text",
+                "message": f"获取举证失败：{result.get('message', '未知错误')}"
+            }
+
+    async def _handle_update_incident_status_intent(
+        self,
+        user_message: str,
+        messages: List[Dict[str, str]],
+        provider: str,
+        api_key: str,
+        base_url: Optional[str] = None,
+        auth_code: Optional[str] = None,
+        flux_base_url: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """处理更新事件状态意图"""
+        try:
+            # 提取更新参数
+            extracted_params = await self._extract_update_status_params(
+                user_message, messages, provider, api_key, base_url
+            )
+        except Exception as e:
+            # 参数提取失败，按普通聊天处理
+            chat_result = await self.chat(messages, provider, api_key, base_url)
+            chat_result["type"] = "text"
+            return chat_result
+
+        uuids = extracted_params.get("uuids", [])
+        name = extracted_params.get("name")
+        deal_status = extracted_params.get("deal_status")
+        deal_comment = extracted_params.get("deal_comment", "处置完成")
+
+        # If name is provided but no UUIDs, search for it
+        if not uuids and name:
+            if not auth_code or not flux_base_url:
+                return {
+                    "success": True,
+                    "type": "text",
+                    "message": "缺少 Flux 认证信息。请先登录系统。"
+                }
+
+            # Search incident by name (reuse existing method)
+            searched_uuid = await self._search_incident_by_name(
+                name=name,
+                auth_code=auth_code,
+                flux_base_url=flux_base_url
+            )
+
+            if not searched_uuid:
+                return {
+                    "success": True,
+                    "type": "text",
+                    "message": f"未找到名称为 '{name}' 的安全事件。\n\n建议：\n• 请确认事件名称是否正确\n• 使用'查询事件列表'查看所有可用事件\n• 提供完整的事件ID（格式：incident-xxx）"
+                }
+
+            # Convert single UUID to list format
+            uuids = [searched_uuid]
+
+        if not uuids:
+            return {
+                "success": True,
+                "type": "text",
+                "message": "我识别到您想更新事件状态，但没有找到事件ID。\n\n请提供以下信息之一：\n• 事件ID（格式：incident-xxx）\n• 事件名称（用引号括起，如：'主机存在漏洞'）\n• 事件编号（如：第一个事件、事件#1）"
+            }
+
+        if deal_status is None:
+            return {
+                "success": True,
+                "type": "text",
+                "message": "我识别到您想更新事件状态，但没有明确新的处置状态。请说明要更新为什么状态（如：已处置、处置中、已挂起等）。"
+            }
+
+        # 使用 SecurityIncidentsService
+        from .security_incidents_service import SecurityIncidentsService
+
+        if not auth_code or not flux_base_url:
+            return {
+                "success": True,
+                "type": "text",
+                "message": "缺少 Flux 认证信息。请先登录系统。"
+            }
+
+        incidents_service = SecurityIncidentsService()
+
+        # 调用批量更新接口
+        result = await incidents_service.update_incident_status(
+            auth_code=auth_code,
+            base_url=flux_base_url,
+            uuids=uuids,
+            deal_status=deal_status,
+            deal_comment=deal_comment
+        )
+
+        if result.get("success"):
+            data = result.get("data", {})
+            total = data.get("total", 0)
+            succeeded_num = data.get("succeededNum", 0)
+
+            status_names = {
+                0: "待处置",
+                10: "处置中",
+                40: "已处置",
+                50: "已挂起",
+                60: "接受风险",
+                70: "已遏制"
+            }
+
+            status_name = status_names.get(deal_status, str(deal_status))
+
+            message = f"批量更新成功！\n\n"
+            message += f"• 总事件数: {total}\n"
+            message += f"• 成功更新: {succeeded_num}\n"
+            message += f"• 更新失败: {total - succeeded_num}\n\n"
+            message += f"所有事件已标记为\"{status_name}\"。"
+
+            return {
+                "success": True,
+                "type": "incident_status_updated",
+                "message": message,
+                "update_result": {
+                    "total": total,
+                    "succeededNum": succeeded_num,
+                    "failedNum": total - succeeded_num,
+                    "statusName": status_name,
+                    "statusValue": deal_status
+                }
+            }
+        else:
+            return {
+                "success": True,
+                "type": "text",
+                "message": f"批量更新失败：{result.get('message', '未知错误')}"
+            }
+
+    async def _extract_incidents_params(
+        self,
+        user_message: str,
+        messages: List[Dict[str, str]],
+        provider: str,
+        api_key: str,
+        base_url: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """从用户消息中提取事件查询参数"""
+        history_text = "\n".join([
+            f"{msg.get('role', 'user')}: {msg.get('content', '')}"
+            for msg in messages[-5:]
+        ])
+
+        extraction_prompt = f"""你是一个安全事件查询参数提取助手。从用户消息中提取查询参数。
+
+用户消息: {user_message}
+对话历史: {history_text}
+
+请提取以下信息：
+- startTimestamp: 起始时间戳（Unix时间戳，如 1706745600），如果未指定则为最近7天
+- endTimestamp: 结束时间戳（Unix时间戳，如 1706832000），如果未指定则为当前时间
+- timeField: 时间字段（endTime/startTime/auditTime/updateTime，默认endTime）
+- severities: 严重等级数组（1=低危, 2=中危, 3=高危, 4=严重）
+- dealStatus: 处置状态数组（0=未处置, 10=处置中, 40=已处置, 50=已挂起, 60=接受风险, 70=已遏制）
+- pageSize: 每页条数（默认20）
+- page: 页码（默认1）
+- sort: 排序规则（默认 "endTime:desc,severity:desc"）
+
+返回 JSON 格式（只返回 JSON，不要其他内容）:
+{{
+  "startTimestamp": 1706745600 | null,
+  "endTimestamp": 1706832000 | null,
+  "timeField": "endTime" | null,
+  "severities": [1, 2, 3] | [],
+  "dealStatus": [0] | [],
+  "pageSize": 20 | null,
+  "page": 1 | null,
+  "sort": "endTime:desc,severity:desc" | null
+}}"""
+
+        try:
+            response = await self.chat(
+                messages=[{"role": "user", "content": extraction_prompt}],
+                provider=provider,
+                api_key=api_key,
+                base_url=base_url
+            )
+
+            if response.get("success"):
+                response_text = response.get("message", "")
+                json_match = re.search(r'\{[^}]+\}', response_text, re.DOTALL)
+                if json_match:
+                    try:
+                        params = json.loads(json_match.group())
+                        return params
+                    except json.JSONDecodeError:
+                        pass
+
+            return {}
+
+        except Exception:
+            return {}
+
+    async def _extract_incident_proof_params(
+        self,
+        user_message: str,
+        messages: List[Dict[str, str]],
+        provider: str,
+        api_key: str,
+        base_url: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """从用户消息中提取事件详情参数（支持UUID或事件名称）"""
+        history_text = "\n".join([
+            f"{msg.get('role', 'user')}: {msg.get('content', '')}"
+            for msg in messages[-10:]
+        ])
+
+        extraction_prompt = f"""你是一个事件详情查询参数提取助手。从用户消息中提取事件ID或事件名称。
+
+用户消息: {user_message}
+对话历史: {history_text}
+
+请按优先级提取以下信息：
+1. **uuid**: 事件ID（格式：incident-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx）
+   - 直接提供完整UUID
+   - 引用格式: "第一个事件", "事件 #1", "incident-xxx"
+
+2. **name**: 事件名称（当没有UUID时使用）
+   - 从用户消息中提取引用的事件名称
+   - 通常是引号内的文本，如 "查看'主机存在扫描工具nmap枚举域用户等内网横向行为'这个事件的详情"
+   - 事件名称可能完整或部分匹配
+
+返回 JSON 格式（只返回 JSON，不要其他内容）:
+{{
+  "uuid": "incident-528fdb4e-6720-4b42-8db1-be2e8ba76bec" | null,
+  "name": "主机存在扫描工具nmap枚举域用户等内网横向行为" | null
+}}
+
+注意：
+- 如果有明确的UUID，优先返回uuid
+- 如果用户引用了事件名称（用引号括起或明确表达），提取到name
+- 如果用户说"第一个"/"事件#1"等，尝试从对话历史的incidents_list数据中提取对应UUID
+- 如果都提取不到，返回null
+"""
+
+        try:
+            response = await self.chat(
+                messages=[{"role": "user", "content": extraction_prompt}],
+                provider=provider,
+                api_key=api_key,
+                base_url=base_url
+            )
+
+            if response.get("success"):
+                response_text = response.get("message", "")
+                json_match = re.search(r'\{[^}]+\}', response_text, re.DOTALL)
+                if json_match:
+                    try:
+                        params = json.loads(json_match.group())
+                        return {
+                            "uuid": params.get("uuid"),
+                            "name": params.get("name")
+                        }
+                    except json.JSONDecodeError:
+                        pass
+
+            return {"uuid": None, "name": None}
+
+        except Exception:
+            return {"uuid": None, "name": None}
+
+    async def _search_incident_by_name(
+        self,
+        name: str,
+        auth_code: str,
+        flux_base_url: str
+    ) -> Optional[str]:
+        """根据事件名称搜索事件，返回匹配的UUID"""
+
+        from .security_incidents_service import SecurityIncidentsService
+
+        # Use expanded time range (last 30 days) for better search coverage
+        import time
+        end_timestamp = int(time.time())
+        start_timestamp = end_timestamp - (30 * 24 * 60 * 60)  # 30 days ago
+
+        incidents_service = SecurityIncidentsService()
+
+        # Query incidents with expanded time range
+        result = await incidents_service.get_incidents(
+            auth_code=auth_code,
+            base_url=flux_base_url,
+            start_timestamp=start_timestamp,
+            end_timestamp=end_timestamp,
+            time_field="endTime",
+            page_size=100,  # Get more results for better matching
+            page=1,
+            sort="endTime:desc"
+        )
+
+        if not result.get("success"):
+            return None
+
+        data = result.get("data", {})
+        incidents = data.get("item", [])
+
+        # Search for exact or partial name match
+        best_match = None
+
+        for incident in incidents:
+            incident_name = incident.get("name", "")
+            if name.strip() == incident_name:
+                # Exact match - return immediately
+                return incident.get("uuId")
+            elif name.strip() in incident_name or incident_name in name.strip():
+                # Partial match - store as fallback
+                if not best_match:
+                    best_match = incident.get("uuId")
+
+        # Return best partial match if no exact match found
+        return best_match
+
+    async def _extract_update_status_params(
+        self,
+        user_message: str,
+        messages: List[Dict[str, str]],
+        provider: str,
+        api_key: str,
+        base_url: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """从用户消息中提取更新状态参数"""
+        history_text = "\n".join([
+            f"{msg.get('role', 'user')}: {msg.get('content', '')}"
+            for msg in messages[-5:]
+        ])
+
+        extraction_prompt = f"""你是一个事件状态更新参数提取助手。从用户消息中提取更新参数。
+
+用户消息: {user_message}
+对话历史: {history_text}
+
+请按优先级提取以下信息：
+1. **uuids**: 事件ID列表（数组，格式：["incident-xxx", "incident-yyy"]）
+   - 直接提供完整UUID列表
+   - 引用格式: "第一个事件", "事件 #1, #2"
+
+2. **name**: 单个事件名称（当没有UUID时使用）
+   - 从用户消息中提取引用的事件名称
+   - 通常是引号内的文本，如 "更改'主机存在Struts2-048远程命令执行漏洞（CVE-2017-9791）（企图）'事件处置状态"
+   - 事件名称可能完整或部分匹配
+
+3. **deal_status**: 处置状态（0=待处置, 10=处置中, 40=已处置, 50=已挂起, 60=接受风险, 70=已遏制）
+4. **deal_comment**: 操作备注/说明
+
+状态映射规则：
+- "已处置" / "处置完成" / "完成" / "fixed" / "resolved" → 40
+- "处置中" / "处理中" / "进行中" / "in progress" → 10
+- "已挂起" / "暂停" / "挂起" / "suspended" → 50
+- "接受风险" / "风险接受" / "accept risk" → 60
+- "已遏制" / "已控制" / "contained" → 70
+- "未处置" / "待处置" / "pending" → 0
+
+返回 JSON 格式（只返回 JSON，不要其他内容）:
+{{
+  "uuids": ["incident-xxx", "incident-yyy"] | [],
+  "name": "主机存在Struts2-048远程命令执行漏洞（CVE-2017-9791）（企图）" | null,
+  "deal_status": 40 | null,
+  "deal_comment": "处置完成" | null
+}}
+
+注意：
+- 如果有明确的UUID列表，优先返回uuids
+- 如果用户引用了单个事件名称（用引号括起或明确表达），提取到name
+- 如果用户说"第一个"/"事件#1"等，尝试从对话历史的incidents_list数据中提取对应UUID
+- uuids和name通常不会同时出现
+"""
+
+        try:
+            response = await self.chat(
+                messages=[{"role": "user", "content": extraction_prompt}],
+                provider=provider,
+                api_key=api_key,
+                base_url=base_url
+            )
+
+            if response.get("success"):
+                response_text = response.get("message", "")
+                json_match = re.search(r'\{[^}]+\}', response_text, re.DOTALL)
+                if json_match:
+                    try:
+                        params = json.loads(json_match.group())
+                        return {
+                            "uuids": params.get("uuids", []),
+                            "name": params.get("name"),
+                            "deal_status": params.get("deal_status"),
+                            "deal_comment": params.get("deal_comment")
+                        }
+                    except json.JSONDecodeError:
+                        pass
+
             return {}
 
         except Exception:

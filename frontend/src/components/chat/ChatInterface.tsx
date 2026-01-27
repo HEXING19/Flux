@@ -23,9 +23,15 @@ import { AssetSummaryTable } from './AssetSummaryTable';
 import { IPBlockConfirmationDialog } from './IPBlockConfirmationDialog';
 import { IPBlockStatusTable } from './IPBlockStatusTable';
 import { IPBlockSummaryTable } from './IPBlockSummaryTable';
+import { IncidentsListTable } from './IncidentsListTable';
+import { IncidentProofTable } from './IncidentProofTable';
+import { IncidentUpdateTable } from './IncidentUpdateTable';
 import type { AssetParams } from '../../types/asset';
 import type { AssetSummary } from '../../types/asset';
 import type { IPBlockParams, IPBlockStatus, IPBlockSummary } from '../../types/ipblock';
+import type { IncidentsListData } from '../../types/incidents';
+import type { IncidentProofData } from '../../types/incidentProof';
+import type { IncidentUpdateData } from '../../types/incidentUpdate';
 import { parseErrorResponse, formatChatMessage, isStructuredError } from '../../utils/errorHelper';
 
 interface Message {
@@ -33,8 +39,8 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
-  type?: 'text' | 'asset_summary' | 'ipblock_status' | 'ipblock_summary';
-  data?: AssetSummary | IPBlockStatus | IPBlockSummary;
+  type?: 'text' | 'asset_summary' | 'ipblock_status' | 'ipblock_summary' | 'incidents_list' | 'incident_proof' | 'incident_status_updated';
+  data?: AssetSummary | IPBlockStatus | IPBlockSummary | IncidentsListData | IncidentProofData | IncidentUpdateData;
 }
 
 interface QuickAction {
@@ -210,6 +216,45 @@ export const ChatInterface = () => {
           data: data.status,
         };
         setMessages((prev) => [...prev, statusMessage]);
+      } else if (data.type === 'incidents_list' && data.incidents_data) {
+        // 显示安全事件列表
+        const incidentsMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: data.message || '安全事件查询结果',
+          timestamp: new Date(),
+          type: 'incidents_list',
+          data: data.incidents_data,
+        };
+        setMessages((prev) => [...prev, incidentsMessage]);
+      } else if (data.type === 'incident_proof' && data.proof_data) {
+        // 显示事件详情
+        const proofMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: data.message || '事件详情',
+          timestamp: new Date(),
+          type: 'incident_proof',
+          data: data.proof_data,
+        };
+        setMessages((prev) => [...prev, proofMessage]);
+      } else if (data.type === 'incident_status_updated' && data.update_result) {
+        // 显示更新结果
+        const updateResult: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: data.message || '事件状态更新结果',
+          timestamp: new Date(),
+          type: 'incident_status_updated',
+          data: {
+            total: data.update_result.total || 0,
+            succeededNum: data.update_result.succeededNum || 0,
+            failedNum: (data.update_result.failedNum !== undefined ? data.update_result.failedNum : (data.update_result.total || 0) - (data.update_result.succeededNum || 0)),
+            statusName: data.update_result.statusName || '已处置',
+            statusValue: data.update_result.statusValue !== undefined ? data.update_result.statusValue : 40,
+          },
+        };
+        setMessages((prev) => [...prev, updateResult]);
       } else {
         // 普通消息
         const assistantMessage: Message = {
@@ -489,7 +534,7 @@ export const ChatInterface = () => {
                       borderRadius: 2,
                       bgcolor: message.role === 'user' ? 'primary.main' : 'grey.100',
                       color: message.role === 'user' ? 'white' : 'text.primary',
-                      minWidth: message.type === 'asset_summary' || message.type === 'ipblock_status' || message.type === 'ipblock_summary' ? '400px' : 'auto',
+                      minWidth: message.type === 'asset_summary' || message.type === 'ipblock_status' || message.type === 'ipblock_summary' || message.type === 'incidents_list' || message.type === 'incident_proof' || message.type === 'incident_status_updated' ? '400px' : 'auto',
                     }}
                   >
                     {message.type === 'asset_summary' && message.data ? (
@@ -498,6 +543,12 @@ export const ChatInterface = () => {
                       <IPBlockStatusTable status={message.data as IPBlockStatus} ip={message.content} />
                     ) : message.type === 'ipblock_summary' && message.data ? (
                       <IPBlockSummaryTable data={message.data as IPBlockSummary} />
+                    ) : message.type === 'incidents_list' && message.data ? (
+                      <IncidentsListTable incidents={(message.data as IncidentsListData).items} total={(message.data as IncidentsListData).total} />
+                    ) : message.type === 'incident_proof' && message.data ? (
+                      <IncidentProofTable data={message.data as IncidentProofData} />
+                    ) : message.type === 'incident_status_updated' && message.data ? (
+                      <IncidentUpdateTable data={message.data as IncidentUpdateData} />
                     ) : (
                       <Typography variant="body2" sx={{ lineHeight: 1.6 }}>
                         {message.content}

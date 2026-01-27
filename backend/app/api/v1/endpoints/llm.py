@@ -38,10 +38,13 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     success: bool
     message: str
-    type: Optional[str] = "text"  # "text" | "asset_confirmation" | "ipblock_confirmation" | "ipblock_status"
+    type: Optional[str] = "text"  # "text" | "asset_confirmation" | "ipblock_confirmation" | "ipblock_status" | "incidents_list" | "incident_proof" | "incident_status_updated"
     asset_params: Optional[dict] = None  # 资产参数（用于确认对话框）
     block_params: Optional[dict] = None  # IP封禁参数（用于确认对话框）
     status: Optional[dict] = None  # IP封禁状态
+    incidents_data: Optional[dict] = None  # 事件列表数据
+    proof_data: Optional[dict] = None  # 事件举证数据
+    update_result: Optional[dict] = None  # 更新结果数据
 
 
 @router.post("/test", response_model=LLMTestResponse)
