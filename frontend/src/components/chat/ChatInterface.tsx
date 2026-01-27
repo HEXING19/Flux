@@ -20,16 +20,20 @@ import {
 } from '@mui/icons-material';
 import { AssetConfirmationDialog } from './AssetConfirmationDialog';
 import { AssetSummaryTable } from './AssetSummaryTable';
+import { IPBlockConfirmationDialog } from './IPBlockConfirmationDialog';
+import { IPBlockStatusTable } from './IPBlockStatusTable';
 import type { AssetParams } from '../../types/asset';
 import type { AssetSummary } from '../../types/asset';
+import type { IPBlockParams, IPBlockStatus } from '../../types/ipblock';
+import { parseErrorResponse, formatChatMessage, isStructuredError } from '../../utils/errorHelper';
 
 interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
-  type?: 'text' | 'asset_summary';
-  data?: AssetSummary;
+  type?: 'text' | 'asset_summary' | 'ipblock_status';
+  data?: AssetSummary | IPBlockStatus;
 }
 
 interface QuickAction {
@@ -86,6 +90,12 @@ export const ChatInterface = () => {
   const [confirmationOpen, setConfirmationOpen] = useState(false);
   const [pendingParams, setPendingParams] = useState<AssetParams | null>(null);
   const [confirming, setConfirming] = useState(false);
+
+  // IP封禁确认对话框状态
+  const [ipBlockConfirmationOpen, setIPBlockConfirmationOpen] = useState(false);
+  const [pendingIPBlockParams, setPendingIPBlockParams] = useState<IPBlockParams | null>(null);
+  const [confirmingIPBlock, setConfirmingIPBlock] = useState(false);
+  const [ipBlockError, setIPBlockError] = useState<string | null>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -174,6 +184,31 @@ export const ChatInterface = () => {
           timestamp: new Date(),
         };
         setMessages((prev) => [...prev, tempMessage]);
+      } else if (data.type === 'ipblock_confirmation' && data.block_params) {
+        // 打开IP封禁确认对话框
+        setPendingIPBlockParams(data.block_params);
+        setIPBlockConfirmationOpen(true);
+        setIPBlockError(null);
+
+        // 添加临时消息
+        const tempMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: data.message || '请确认IP封禁信息',
+          timestamp: new Date(),
+        };
+        setMessages((prev) => [...prev, tempMessage]);
+      } else if (data.type === 'ipblock_status' && data.status) {
+        // 显示IP封禁状态
+        const statusMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: data.message || 'IP封禁状态查询结果',
+          timestamp: new Date(),
+          type: 'ipblock_status',
+          data: data.status,
+        };
+        setMessages((prev) => [...prev, statusMessage]);
       } else {
         // 普通消息
         const assistantMessage: Message = {
@@ -236,14 +271,31 @@ export const ChatInterface = () => {
       const result = await response.json();
 
       // 添加结果消息
-      const resultMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: result.message || (result.success ? '✅ 资产添加成功！' : '❌ 添加失败'),
-        timestamp: new Date(),
-        type: result.success ? 'asset_summary' : 'text',
-        data: result.success ? result.asset_data : undefined,
-      };
+      let resultMessage: Message;
+
+      if (result.success) {
+        // 成功添加资产
+        resultMessage = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: '✅ 资产添加成功！',
+          timestamp: new Date(),
+          type: 'asset_summary',
+          data: result.asset_data,
+        };
+      } else {
+        // 处理错误 - 使用结构化错误信息
+        const parsedError = parseErrorResponse(result);
+        const errorMessage = formatChatMessage(parsedError);
+
+        resultMessage = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: errorMessage,
+          timestamp: new Date(),
+          type: 'text',
+        };
+      }
 
       setMessages((prev) => [...prev, resultMessage]);
       setConfirmationOpen(false);
@@ -270,6 +322,99 @@ export const ChatInterface = () => {
       id: (Date.now() + 1).toString(),
       role: 'assistant',
       content: '已取消添加资产。',
+      timestamp: new Date(),
+    };
+
+    setMessages((prev) => [...prev, cancelMessage]);
+  };
+
+  // 处理IP封禁确认
+  const handleIPBlockConfirm = async () => {
+    if (!pendingIPBlockParams) return;
+
+    setConfirmingIPBlock(true);
+    setIPBlockError(null);
+
+    try {
+      const fluxAuthCode = localStorage.getItem('flux_auth_code');
+      const fluxBaseUrl = localStorage.getItem('flux_base_url');
+
+      if (!fluxAuthCode || !fluxBaseUrl) {
+        throw new Error('缺少 Flux 认证信息，请先登录');
+      }
+
+      const response = await fetch('http://localhost:8000/api/v1/ipblock/confirm-block', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          ...pendingIPBlockParams,
+          auth_code: fluxAuthCode,
+          flux_base_url: fluxBaseUrl,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('API请求失败');
+      }
+
+      const result = await response.json();
+
+      // 添加结果消息
+      let resultMessage: Message;
+
+      if (result.success) {
+        // 成功封禁
+        resultMessage = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: result.message || '✅ IP封禁成功！',
+          timestamp: new Date(),
+          type: 'text',
+        };
+      } else {
+        // 处理错误
+        const errorMessage = result.error_info?.friendly_message || result.message || '封禁失败';
+        setIPBlockError(errorMessage);
+
+        resultMessage = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: `❌ 封禁失败：${errorMessage}`,
+          timestamp: new Date(),
+          type: 'text',
+        };
+      }
+
+      setMessages((prev) => [...prev, resultMessage]);
+      setIPBlockConfirmationOpen(false);
+      setPendingIPBlockParams(null);
+    } catch (error: any) {
+      setIPBlockError(error.message);
+      const errorMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: `❌ 封禁失败：${error.message}`,
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+    } finally {
+      setConfirmingIPBlock(false);
+    }
+  };
+
+  // 处理IP封禁取消
+  const handleIPBlockCancel = () => {
+    setIPBlockConfirmationOpen(false);
+    setPendingIPBlockParams(null);
+    setIPBlockError(null);
+
+    // 添加取消消息
+    const cancelMessage: Message = {
+      id: (Date.now() + 1).toString(),
+      role: 'assistant',
+      content: '已取消IP封禁操作。',
       timestamp: new Date(),
     };
 
@@ -325,15 +470,17 @@ export const ChatInterface = () => {
                   <Paper
                     elevation={0}
                     sx={{
-                      p: message.type === 'asset_summary' ? 2 : 2,
+                      p: message.type === 'asset_summary' || message.type === 'ipblock_status' ? 2 : 2,
                       borderRadius: 2,
                       bgcolor: message.role === 'user' ? 'primary.main' : 'grey.100',
                       color: message.role === 'user' ? 'white' : 'text.primary',
-                      minWidth: message.type === 'asset_summary' ? '400px' : 'auto',
+                      minWidth: message.type === 'asset_summary' || message.type === 'ipblock_status' ? '400px' : 'auto',
                     }}
                   >
                     {message.type === 'asset_summary' && message.data ? (
-                      <AssetSummaryTable data={message.data} />
+                      <AssetSummaryTable data={message.data as AssetSummary} />
+                    ) : message.type === 'ipblock_status' && message.data ? (
+                      <IPBlockStatusTable status={message.data as IPBlockStatus} ip={message.content} />
                     ) : (
                       <Typography variant="body2" sx={{ lineHeight: 1.6 }}>
                         {message.content}
@@ -500,6 +647,16 @@ export const ChatInterface = () => {
         onConfirm={handleAssetConfirm}
         onCancel={handleAssetCancel}
         loading={confirming}
+      />
+
+      {/* IP封禁确认对话框 */}
+      <IPBlockConfirmationDialog
+        open={ipBlockConfirmationOpen}
+        params={pendingIPBlockParams}
+        onConfirm={handleIPBlockConfirm}
+        onCancel={handleIPBlockCancel}
+        loading={confirmingIPBlock}
+        error={ipBlockError}
       />
     </Box>
   );

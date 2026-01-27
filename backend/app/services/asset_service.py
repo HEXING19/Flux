@@ -8,6 +8,7 @@ import ipaddress
 import requests
 from typing import Dict, Any, Optional, List
 from ..utils.sdk.aksk_py3 import Signature
+from ..utils.error_handler import parse_api_error, format_error_message
 
 
 class AssetService:
@@ -163,19 +164,34 @@ class AssetService:
             if "ip" not in asset_data:
                 return {
                     "success": False,
-                    "message": "IP address is required"
+                    "status_code": 400,
+                    "error_type": "validation_error",
+                    "friendly_message": "IP地址不能为空",
+                    "raw_message": "IP address is required",
+                    "suggestion": "请提供资产的IP地址",
+                    "actions": ["添加IP地址"]
                 }
 
             if not self.validate_ip(asset_data["ip"]):
                 return {
                     "success": False,
-                    "message": f"Invalid IP address format: {asset_data['ip']}"
+                    "status_code": 400,
+                    "error_type": "validation_error",
+                    "friendly_message": "IP地址格式不正确",
+                    "raw_message": f"Invalid IP address format: {asset_data['ip']}",
+                    "suggestion": f"请检查IP地址格式，正确格式如：192.168.1.1",
+                    "actions": ["修改IP地址"]
                 }
 
             if "branchId" not in asset_data:
                 return {
                     "success": False,
-                    "message": "Asset group ID (branchId) is required"
+                    "status_code": 400,
+                    "error_type": "validation_error",
+                    "friendly_message": "资产组ID不能为空",
+                    "raw_message": "Asset group ID (branchId) is required",
+                    "suggestion": "请提供资产组ID（branchId），通常默认值为0",
+                    "actions": ["添加branchId参数"]
                 }
 
             # Validate MAC address if provided
@@ -183,7 +199,12 @@ class AssetService:
                 if not self.validate_mac(asset_data["mac"]):
                     return {
                         "success": False,
-                        "message": f"Invalid MAC address format: {asset_data['mac']}"
+                        "status_code": 400,
+                        "error_type": "validation_error",
+                        "friendly_message": "MAC地址格式不正确",
+                        "raw_message": f"Invalid MAC address format: {asset_data['mac']}",
+                        "suggestion": "MAC地址格式应为：XX:XX:XX:XX:XX:XX 或 XX-XX-XX-XX-XX-XX",
+                        "actions": ["修改MAC地址"]
                     }
 
             # Validate field lengths
@@ -191,21 +212,36 @@ class AssetService:
                 if len(asset_data["assetName"]) > 95:
                     return {
                         "success": False,
-                        "message": "Asset name must be 95 characters or less"
+                        "status_code": 400,
+                        "error_type": "validation_error",
+                        "friendly_message": "资产名称超出长度限制",
+                        "raw_message": "Asset name must be 95 characters or less",
+                        "suggestion": "资产名称不能超过95个字符，请缩短名称",
+                        "actions": ["缩短资产名称"]
                     }
 
             if "hostName" in asset_data and asset_data.get("hostName"):
                 if len(asset_data["hostName"]) > 95:
                     return {
                         "success": False,
-                        "message": "Hostname must be 95 characters or less"
+                        "status_code": 400,
+                        "error_type": "validation_error",
+                        "friendly_message": "主机名超出长度限制",
+                        "raw_message": "Hostname must be 95 characters or less",
+                        "suggestion": "主机名不能超过95个字符，请缩短主机名",
+                        "actions": ["缩短主机名"]
                     }
 
             if "comment" in asset_data and asset_data.get("comment"):
                 if len(asset_data["comment"]) > 95:
                     return {
                         "success": False,
-                        "message": "Comment must be 95 characters or less"
+                        "status_code": 400,
+                        "error_type": "validation_error",
+                        "friendly_message": "备注超出长度限制",
+                        "raw_message": "Comment must be 95 characters or less",
+                        "suggestion": "备注不能超过95个字符，请缩短内容",
+                        "actions": ["缩短备注"]
                     }
 
             # Validate tags
@@ -213,13 +249,23 @@ class AssetService:
                 if len(asset_data["tags"]) > 10:
                     return {
                         "success": False,
-                        "message": "Maximum 10 tags allowed"
+                        "status_code": 400,
+                        "error_type": "validation_error",
+                        "friendly_message": "标签数量超出限制",
+                        "raw_message": "Maximum 10 tags allowed",
+                        "suggestion": "资产标签最多10个，请删除部分标签",
+                        "actions": ["减少标签数量"]
                     }
                 for tag in asset_data["tags"]:
                     if len(tag) > 20:
                         return {
                             "success": False,
-                            "message": f"Tag '{tag}' exceeds 20 character limit"
+                            "status_code": 400,
+                            "error_type": "validation_error",
+                            "friendly_message": "标签长度超出限制",
+                            "raw_message": f"Tag '{tag}' exceeds 20 character limit",
+                            "suggestion": f"标签 '{tag}' 超过20字符限制，请缩短标签",
+                            "actions": ["缩短标签"]
                         }
 
             # Construct request
@@ -246,7 +292,12 @@ class AssetService:
             if not self.signature:
                 return {
                     "success": False,
-                    "message": "Authentication not configured. Please provide auth_code or ak/sk."
+                    "status_code": 401,
+                    "error_type": "auth_error",
+                    "friendly_message": "认证信息未配置",
+                    "raw_message": "Authentication not configured. Please provide auth_code or ak/sk.",
+                    "suggestion": "请在设置页面配置Flux认证信息（Auth Code）",
+                    "actions": ["配置认证信息"]
                 }
 
             # Create and sign request
@@ -275,26 +326,33 @@ class AssetService:
                         "data": result
                     }
                 else:
-                    return {
-                        "success": False,
-                        "message": result.get("message", "Unknown error"),
-                        "data": result
-                    }
+                    # Parse non-success response with error handler
+                    error_info = parse_api_error(response.status_code, response.text)
+                    return error_info
             else:
-                return {
-                    "success": False,
-                    "message": f"API error: HTTP {response.status_code} - {response.text}"
-                }
+                # Parse error response with error handler
+                error_info = parse_api_error(response.status_code, response.text)
+                return error_info
 
         except requests.exceptions.RequestException as e:
             return {
                 "success": False,
-                "message": f"Request failed: {str(e)}"
+                "status_code": 500,
+                "error_type": "network_error",
+                "friendly_message": "网络请求失败",
+                "raw_message": f"Request failed: {str(e)}",
+                "suggestion": "请检查网络连接和API地址配置，确保能够访问Flux平台",
+                "actions": ["检查网络连接", "检查API地址", "重试"]
             }
         except Exception as e:
             return {
                 "success": False,
-                "message": f"Unexpected error: {str(e)}"
+                "status_code": 500,
+                "error_type": "system_error",
+                "friendly_message": "系统处理异常",
+                "raw_message": f"Unexpected error: {str(e)}",
+                "suggestion": "系统处理请求时出现异常，请稍后重试或联系管理员",
+                "actions": ["重试", "联系管理员"]
             }
 
     def infer_parameters(self, text: str, provided_params: Dict[str, Any]) -> Dict[str, Any]:

@@ -302,65 +302,28 @@ class LLMService:
             intent = intent_result.get("intent", "general_chat")
             confidence = intent_result.get("confidence", 0.0)
 
-            # 如果不是添加资产的意图，或者置信度太低，按普通聊天处理
-            if intent != "add_asset" or confidence < 0.7:
+            # 置信度太低，按普通聊天处理
+            if confidence < 0.7:
                 chat_result = await self.chat(messages, provider, api_key, base_url)
                 chat_result["type"] = "text"
                 return chat_result
 
-            # Step 2: 提取资产参数
-            try:
-                extracted_params = await self._extract_asset_params(
-                    user_message, messages, provider, api_key, base_url
+            # 处理不同的意图
+            if intent == "add_asset":
+                return await self._handle_asset_intent(
+                    user_message, messages, provider, api_key, base_url,
+                    auth_code, flux_base_url
                 )
-            except Exception:
-                # 参数提取失败，按普通聊天处理
+            elif intent == "ipblock":
+                return await self._handle_ipblock_intent(
+                    user_message, messages, provider, api_key, base_url,
+                    auth_code, flux_base_url
+                )
+            else:
+                # 普通聊天
                 chat_result = await self.chat(messages, provider, api_key, base_url)
                 chat_result["type"] = "text"
                 return chat_result
-
-            # Step 3: 使用 AssetService 验证和补充参数
-            from .asset_service import AssetService
-
-            if not auth_code or not flux_base_url:
-                return {
-                    "success": True,
-                    "type": "text",
-                    "message": "缺少 Flux 认证信息。请先登录系统。"
-                }
-
-            asset_service = AssetService(
-                base_url=flux_base_url,
-                auth_code=auth_code
-            )
-
-            # 验证和补充参数
-            validated_params = asset_service.infer_parameters(
-                text=user_message,
-                provided_params=extracted_params
-            )
-
-            # 设置默认 branchId
-            if "branchId" not in validated_params:
-                validated_params["branchId"] = 0
-
-            # 检查必填字段
-            if "ip" not in validated_params or not validated_params["ip"]:
-                return {
-                    "success": True,
-                    "type": "text",
-                    "message": "我识别到您想添加资产，但是没有找到 IP 地址。请提供 IP 地址。"
-                }
-
-            # Step 4: 返回确认信息（不直接创建资产）
-            confirmation_msg = "我识别到您想添加一个资产。请确认以下信息："
-
-            return {
-                "success": True,
-                "type": "asset_confirmation",
-                "message": confirmation_msg,
-                "asset_params": validated_params
-            }
 
         except Exception as e:
             # 任何错误都回退到普通聊天
@@ -384,18 +347,18 @@ class LLMService:
         base_url: Optional[str] = None
     ) -> Dict[str, Any]:
         """检测用户意图"""
-        intent_prompt = f"""你是一个意图识别助手。判断用户消息是否是要添加资产到安全平台。
+        intent_prompt = f"""你是一个意图识别助手。判断用户消息的意图类型。
 
 用户消息: {user_message}
 
 分析用户是否想要：
-- 添加新资产
-- 创建新服务器
-- 注册新设备
+1. 添加资产 - 添加新资产、创建新服务器、注册新设备
+2. IP封禁 - 查询IP封禁状态、封禁IP地址、检查并封禁IP
+3. 普通聊天 - 其他对话
 
 返回 JSON 格式（只返回 JSON，不要其他内容）:
 {{
-  "intent": "add_asset" | "general_chat",
+  "intent": "add_asset" | "ipblock" | "general_chat",
   "confidence": 0.0-1.0,
   "reasoning": "判断理由"
 }}"""
@@ -552,3 +515,265 @@ class LLMService:
             lines.append(f"• 资产组: {params['branchId']}")
 
         return "\n".join(lines)
+
+    async def _handle_asset_intent(
+        self,
+        user_message: str,
+        messages: List[Dict[str, str]],
+        provider: str,
+        api_key: str,
+        base_url: Optional[str] = None,
+        auth_code: Optional[str] = None,
+        flux_base_url: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """处理添加资产意图"""
+        try:
+            # 提取资产参数
+            extracted_params = await self._extract_asset_params(
+                user_message, messages, provider, api_key, base_url
+            )
+        except Exception:
+            # 参数提取失败，按普通聊天处理
+            chat_result = await self.chat(messages, provider, api_key, base_url)
+            chat_result["type"] = "text"
+            return chat_result
+
+        # 使用 AssetService 验证和补充参数
+        from .asset_service import AssetService
+
+        if not auth_code or not flux_base_url:
+            return {
+                "success": True,
+                "type": "text",
+                "message": "缺少 Flux 认证信息。请先登录系统。"
+            }
+
+        asset_service = AssetService(
+            base_url=flux_base_url,
+            auth_code=auth_code
+        )
+
+        # 验证和补充参数
+        validated_params = asset_service.infer_parameters(
+            text=user_message,
+            provided_params=extracted_params
+        )
+
+        # 设置默认 branchId
+        if "branchId" not in validated_params:
+            validated_params["branchId"] = 0
+
+        # 检查必填字段
+        if "ip" not in validated_params or not validated_params["ip"]:
+            return {
+                "success": True,
+                "type": "text",
+                "message": "我识别到您想添加资产，但是没有找到 IP 地址。请提供 IP 地址。"
+            }
+
+        # 返回确认信息（不直接创建资产）
+        confirmation_msg = "我识别到您想添加一个资产。请确认以下信息："
+
+        return {
+            "success": True,
+            "type": "asset_confirmation",
+            "message": confirmation_msg,
+            "asset_params": validated_params
+        }
+
+    async def _handle_ipblock_intent(
+        self,
+        user_message: str,
+        messages: List[Dict[str, str]],
+        provider: str,
+        api_key: str,
+        base_url: Optional[str] = None,
+        auth_code: Optional[str] = None,
+        flux_base_url: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """处理IP封禁意图"""
+        try:
+            # 提取IP封禁参数
+            extracted_params = await self._extract_ipblock_params(
+                user_message, messages, provider, api_key, base_url
+            )
+        except Exception as e:
+            # 参数提取失败，按普通聊天处理
+            chat_result = await self.chat(messages, provider, api_key, base_url)
+            chat_result["type"] = "text"
+            return chat_result
+
+        # 使用 IpBlockService 验证和处理参数
+        from .ipblock_service import IpBlockService
+
+        if not auth_code or not flux_base_url:
+            return {
+                "success": True,
+                "type": "text",
+                "message": "缺少 Flux 认证信息。请先登录系统。"
+            }
+
+        ipblock_service = IpBlockService(
+            base_url=flux_base_url,
+            auth_code=auth_code
+        )
+
+        # 检查必填字段
+        if "ip_address" not in extracted_params or not extracted_params["ip_address"]:
+            return {
+                "success": True,
+                "type": "text",
+                "message": "我识别到您想查询或封禁IP，但是没有找到 IP 地址。请提供 IP 地址。"
+            }
+
+        # 确定操作类型
+        action = extracted_params.get("action", "check")
+        ip_address = extracted_params["ip_address"]
+
+        # 判断是检查还是封禁
+        if "device_name" in extracted_params and extracted_params["device_name"]:
+            # 有设备名称，说明是封禁操作
+            device_name = extracted_params["device_name"]
+            device_type = extracted_params.get("device_type", "AF")
+
+            # 调用 check_and_block 方法
+            result = ipblock_service.check_and_block(
+                ip_address=ip_address,
+                device_name=device_name,
+                device_type=device_type
+            )
+
+            if result["action"] == "already_blocked":
+                # 已封禁，返回状态
+                return {
+                    "success": True,
+                    "type": "ipblock_status",
+                    "message": f"IP {ip_address} 已被封禁",
+                    "status": result["current_status"]
+                }
+            elif result["action"] == "need_block":
+                # 需要封禁，返回确认对话框参数
+                block_params = result["block_params"]
+                return {
+                    "success": True,
+                    "type": "ipblock_confirmation",
+                    "message": f"IP {ip_address} 未被封禁，是否使用设备 {device_name} 进行封禁？",
+                    "block_params": block_params
+                }
+            else:
+                # 错误
+                error_info = result.get("error_info", {})
+                return {
+                    "success": True,
+                    "type": "text",
+                    "message": error_info.get("friendly_message", "操作失败")
+                }
+        else:
+            # 没有设备名称，只查询状态
+            result = ipblock_service.check_ip_blocked(ip_address)
+
+            if result["success"]:
+                if result["blocked"]:
+                    return {
+                        "success": True,
+                        "type": "ipblock_status",
+                        "message": f"IP {ip_address} 已被封禁",
+                        "status": {
+                            "blocked": True,
+                            "rules": result.get("rules", []),
+                            "devices": result.get("devices", []),
+                            "total_rules": result.get("total_rules", 0)
+                        }
+                    }
+                else:
+                    return {
+                        "success": True,
+                        "type": "ipblock_status",
+                        "message": f"IP {ip_address} 未被封禁",
+                        "status": {
+                            "blocked": False,
+                            "rules": [],
+                            "devices": []
+                        }
+                    }
+            else:
+                error_info = result.get("error_info", {})
+                return {
+                    "success": True,
+                    "type": "text",
+                    "message": error_info.get("friendly_message", "查询失败")
+                }
+
+    async def _extract_ipblock_params(
+        self,
+        user_message: str,
+        messages: List[Dict[str, str]],
+        provider: str,
+        api_key: str,
+        base_url: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """从用户消息中提取IP封禁参数"""
+        # 格式化对话历史
+        history_text = "\n".join([
+            f"{msg.get('role', 'user')}: {msg.get('content', '')}"
+            for msg in messages[-5:]  # 只使用最近 5 条消息
+        ])
+
+        extraction_prompt = f"""你是一个IP封禁参数提取助手。从用户消息中提取IP封禁相关信息。
+
+用户消息: {user_message}
+对话历史: {history_text}
+
+请提取以下信息：
+- ip_address: IP地址（必填，如 192.168.1.100）
+- device_name: 设备名称（如 AF1, AF-01）
+- device_type: 设备类型（AF=网侧设备, EDR=端侧设备，默认AF）
+- action: 操作类型
+  * "check" - 仅查询IP封禁状态
+  * "block" - 直接封禁IP
+  * "check_and_block" - 检查状态，如果未封禁则封禁
+- block_type: 封禁类型（SRC_IP=源IP, DST_IP=目的IP, URL=链接, DNS=域名，默认SRC_IP）
+- time_type: 封禁时长类型（forever=永久, temporary=临时，默认forever）
+- time_value: 封禁时长数值（当time_type为temporary时必填）
+- time_unit: 时间单位（d=天, h=小时, m=分钟）
+- reason: 封禁原因/备注
+
+返回 JSON 格式（只返回 JSON，不要其他内容）:
+{{
+  "ip_address": "192.168.1.100" | null,
+  "device_name": "AF1" | null,
+  "device_type": "AF" | "EDR" | null,
+  "action": "check" | "block" | "check_and_block",
+  "block_type": "SRC_IP" | "DST_IP" | "URL" | "DNS" | null,
+  "time_type": "forever" | "temporary" | null,
+  "time_value": 7 | null,
+  "time_unit": "d" | "h" | "m" | null,
+  "reason": "恶意攻击" | null
+}}"""
+
+        try:
+            response = await self.chat(
+                messages=[{"role": "user", "content": extraction_prompt}],
+                provider=provider,
+                api_key=api_key,
+                base_url=base_url
+            )
+
+            if response.get("success"):
+                # 解析 LLM 返回的 JSON
+                response_text = response.get("message", "")
+
+                # 尝试提取 JSON
+                json_match = re.search(r'\{[^}]+\}', response_text, re.DOTALL)
+                if json_match:
+                    try:
+                        params = json.loads(json_match.group())
+                        return params
+                    except json.JSONDecodeError:
+                        pass
+
+            # 如果解析失败，返回空参数
+            return {}
+
+        except Exception:
+            return {}

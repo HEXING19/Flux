@@ -38,8 +38,10 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     success: bool
     message: str
-    type: Optional[str] = "text"  # "text" | "asset_confirmation"
+    type: Optional[str] = "text"  # "text" | "asset_confirmation" | "ipblock_confirmation" | "ipblock_status"
     asset_params: Optional[dict] = None  # 资产参数（用于确认对话框）
+    block_params: Optional[dict] = None  # IP封禁参数（用于确认对话框）
+    status: Optional[dict] = None  # IP封禁状态
 
 
 @router.post("/test", response_model=LLMTestResponse)
