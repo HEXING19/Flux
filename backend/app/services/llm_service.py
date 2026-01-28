@@ -329,6 +329,11 @@ class LLMService:
                     user_message, messages, provider, api_key, base_url,
                     auth_code, flux_base_url
                 )
+            elif intent == "get_incident_entities":
+                return await self._handle_get_incident_entities_intent(
+                    user_message, messages, provider, api_key, base_url,
+                    auth_code, flux_base_url
+                )
             elif intent == "update_incident_status":
                 return await self._handle_update_incident_status_intent(
                     user_message, messages, provider, api_key, base_url,
@@ -371,12 +376,13 @@ class LLMService:
 2. IP封禁 (ipblock) - 查询IP封禁状态、封禁IP地址、检查并封禁IP
 3. 查询安全事件 (get_incidents) - 查询事件列表、查看安全事件、找事件、显示事件
 4. 查看事件详情 (get_incident_proof) - 查看事件详情、查看举证、查看攻击链、查看事件证据
-5. 更新事件状态 (update_incident_status) - 标记事件状态、处置事件、修改处置状态、批量更新
-6. 普通聊天 (general_chat) - 其他对话
+5. 查看事件外网IP实体 (get_incident_entities) - 查看外网实体、查看IP实体、查看外网IP、查看IP地址列表
+6. 更新事件状态 (update_incident_status) - 标记事件状态、处置事件、修改处置状态、批量更新
+7. 普通聊天 (general_chat) - 其他对话
 
 返回 JSON 格式（只返回 JSON，不要其他内容）:
 {{
-  "intent": "add_asset" | "ipblock" | "get_incidents" | "get_incident_proof" | "update_incident_status" | "general_chat",
+  "intent": "add_asset" | "ipblock" | "get_incidents" | "get_incident_proof" | "get_incident_entities" | "update_incident_status" | "general_chat",
   "confidence": 0.0-1.0,
   "reasoning": "判断理由"
 }}"""
@@ -830,6 +836,12 @@ class LLMService:
 
         incidents_service = SecurityIncidentsService()
 
+        # If name filter is specified, increase page size to get more results for filtering
+        name_filter = extracted_params.get("name")
+        if name_filter:
+            extracted_params["page_size"] = 200  # Get more results for client-side filtering
+            extracted_params["page"] = 1
+
         # 调用查询接口
         result = await incidents_service.get_incidents(
             auth_code=auth_code,
@@ -839,18 +851,40 @@ class LLMService:
 
         if result.get("success"):
             data = result.get("data", {})
-            total = data.get("total", 0)
             items = data.get("item", [])
 
-            return {
-                "success": True,
-                "type": "incidents_list",
-                "message": f"查询成功！找到 {total} 条安全事件。",
-                "incidents_data": {
-                    "total": total,
-                    "items": items
+            # Client-side filtering by name
+            if name_filter and items:
+                filtered_items = [
+                    item for item in items
+                    if name_filter.lower() in item.get("name", "").lower()
+                ]
+
+                # Update total and items
+                total_filtered = len(filtered_items)
+                original_total = data.get("total", 0)
+
+                return {
+                    "success": True,
+                    "type": "incidents_list",
+                    "message": f"查询成功！找到 {total_filtered} 条名称包含'{name_filter}'的安全事件（共筛选 {original_total} 条）。",
+                    "incidents_data": {
+                        "total": total_filtered,
+                        "items": filtered_items
+                    }
                 }
-            }
+            else:
+                total = data.get("total", 0)
+
+                return {
+                    "success": True,
+                    "type": "incidents_list",
+                    "message": f"查询成功！找到 {total} 条安全事件。",
+                    "incidents_data": {
+                        "total": total,
+                        "items": items
+                    }
+                }
         else:
             return {
                 "success": True,
@@ -947,6 +981,105 @@ class LLMService:
                 "success": True,
                 "type": "text",
                 "message": f"获取举证失败：{result.get('message', '未知错误')}"
+            }
+
+    async def _handle_get_incident_entities_intent(
+        self,
+        user_message: str,
+        messages: List[Dict[str, str]],
+        provider: str,
+        api_key: str,
+        base_url: Optional[str] = None,
+        auth_code: Optional[str] = None,
+        flux_base_url: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """处理查看事件外网IP实体意图"""
+        try:
+            # 提取事件ID
+            extracted_params = await self._extract_incident_entities_params(
+                user_message, messages, provider, api_key, base_url
+            )
+        except Exception as e:
+            # 参数提取失败，按普通聊天处理
+            chat_result = await self.chat(messages, provider, api_key, base_url)
+            chat_result["type"] = "text"
+            return chat_result
+
+        uuid = extracted_params.get("uuid")
+        name = extracted_params.get("name")
+
+        # If name is provided but no UUID, search for it
+        if not uuid and name:
+            if not auth_code or not flux_base_url:
+                return {
+                    "success": True,
+                    "type": "text",
+                    "message": "缺少 Flux 认证信息。请先登录系统。"
+                }
+
+            # Search incident by name
+            uuid = await self._search_incident_by_name(
+                name=name,
+                auth_code=auth_code,
+                flux_base_url=flux_base_url
+            )
+
+            if not uuid:
+                return {
+                    "success": True,
+                    "type": "text",
+                    "message": f"未找到名称为 '{name}' 的安全事件。请确认事件名称是否正确，或先查询事件列表。"
+                }
+
+        # If still no UUID, ask user to provide it
+        if not uuid:
+            return {
+                "success": True,
+                "type": "text",
+                "message": "我识别到您想查看事件的外网IP实体，但没有找到事件ID。请提供事件ID（格式：incident-xxx）或事件名称。"
+            }
+
+        # 使用 SecurityIncidentsService
+        from .security_incidents_service import SecurityIncidentsService
+
+        if not auth_code or not flux_base_url:
+            return {
+                "success": True,
+                "type": "text",
+                "message": "缺少 Flux 认证信息。请先登录系统。"
+            }
+
+        incidents_service = SecurityIncidentsService()
+
+        # 调用外网IP实体查询接口
+        result = await incidents_service.get_incident_entities_ip(
+            auth_code=auth_code,
+            base_url=flux_base_url,
+            uuid=uuid
+        )
+
+        # DEBUG: 检查API调用结果
+        print(f"DEBUG incident_entities: API result success={result.get('success')}, result keys={list(result.keys())}")
+
+        if result.get("success"):
+            data = result.get("data", {})
+
+            # DEBUG LOG
+            print(f"DEBUG incident_entities: Returning type=incident_entities, data keys={list(data.keys())}, item count={len(data.get('item', []))}")
+            print(f"DEBUG incident_entities: Full return dict will have entities_data key")
+
+            return {
+                "success": True,
+                "type": "incident_entities",
+                "message": f"事件外网IP实体：找到 {len(data.get('item', []))} 个IP实体",
+                "entities_data": data
+            }
+        else:
+            print(f"DEBUG incident_entities: API call failed, returning type=text")
+            return {
+                "success": True,
+                "type": "text",
+                "message": f"获取外网IP实体失败：{result.get('message', '未知错误')}"
             }
 
     async def _handle_update_incident_status_intent(
@@ -1087,6 +1220,12 @@ class LLMService:
         base_url: Optional[str] = None
     ) -> Dict[str, Any]:
         """从用户消息中提取事件查询参数"""
+        from datetime import datetime
+
+        # Get current time for LLM reference
+        current_time = datetime.now()
+        current_timestamp = int(current_time.timestamp())
+
         history_text = "\n".join([
             f"{msg.get('role', 'user')}: {msg.get('content', '')}"
             for msg in messages[-5:]
@@ -1094,30 +1233,57 @@ class LLMService:
 
         extraction_prompt = f"""你是一个安全事件查询参数提取助手。从用户消息中提取查询参数。
 
+【重要】时间字段说明：
+- startTimestamp/endTimestamp 这两个参数是按"最近发生时间"筛选的
+- timeField：如果不特别指定，请在JSON中省略该字段（不要设置为null）
+- 系统会自动使用endTime（最近发生时间）进行筛选
+- 切勿设置为startTime（会导致按"最早发生时间"筛选，可能查不到事件）
+
+当前时间：{current_time.strftime('%Y-%m-%d %H:%M:%S')}
+当前时间戳：{current_timestamp}
+
 用户消息: {user_message}
 对话历史: {history_text}
 
 请提取以下信息：
-- startTimestamp: 起始时间戳（Unix时间戳，如 1706745600），如果未指定则为最近7天
-- endTimestamp: 结束时间戳（Unix时间戳，如 1706832000），如果未指定则为当前时间
-- timeField: 时间字段（endTime/startTime/auditTime/updateTime，默认endTime）
+- startTimestamp: 起始时间戳（Unix时间戳）
+  • 如果用户说"近X天"/"最近X天"/"过去X天"（如"近30天"），必须计算：当前时间戳 - (X * 86400秒)
+  • 例如"近30天" = {current_timestamp} - (30 * 86400) = {current_timestamp - 30*86400}
+  • 例如"近7天" = {current_timestamp} - (7 * 86400) = {current_timestamp - 7*86400}
+  • 如果未指定时间范围，返回null（系统会默认使用近7天）
+
+- endTimestamp: 结束时间戳（Unix时间戳）
+  • 通常为当前时间戳：{current_timestamp}
+  • 如果用户指定了结束时间，计算对应时间戳
+
+- timeField: 时间字段（仅当用户明确指定时才设置）
+  • 默认省略该字段，系统会使用endTime筛选
+  • 切勿设置为startTime（会导致按最早发生时间筛选，可能查不到事件）
+
 - severities: 严重等级数组（1=低危, 2=中危, 3=高危, 4=严重）
 - dealStatus: 处置状态数组（0=未处置, 10=处置中, 40=已处置, 50=已挂起, 60=接受风险, 70=已遏制）
-- pageSize: 每页条数（默认20）
+- name: 事件名称（用于客户端过滤，如 "主机存在挖矿病毒"）
+- pageSize: 每页条数（默认20，建议当有name过滤时增加到100-200）
 - page: 页码（默认1）
 - sort: 排序规则（默认 "endTime:desc,severity:desc"）
+
+计算示例（请参考）：
+• "近30天" → startTimestamp = {current_timestamp - 30*86400}, endTimestamp = {current_timestamp}
+• "近7天" → startTimestamp = {current_timestamp - 7*86400}, endTimestamp = {current_timestamp}
+• "近24小时" → startTimestamp = {current_timestamp - 86400}, endTimestamp = {current_timestamp}
 
 返回 JSON 格式（只返回 JSON，不要其他内容）:
 {{
   "startTimestamp": 1706745600 | null,
   "endTimestamp": 1706832000 | null,
-  "timeField": "endTime" | null,
   "severities": [1, 2, 3] | [],
   "dealStatus": [0] | [],
+  "name": "主机存在挖矿病毒" | null,
   "pageSize": 20 | null,
   "page": 1 | null,
   "sort": "endTime:desc,severity:desc" | null
-}}"""
+}}
+"""
 
         try:
             response = await self.chat(
@@ -1133,7 +1299,26 @@ class LLMService:
                 if json_match:
                     try:
                         params = json.loads(json_match.group())
-                        return params
+
+                        # Map camelCase parameter names to snake_case for function signature
+                        param_mapping = {
+                            "startTimestamp": "start_timestamp",
+                            "endTimestamp": "end_timestamp",
+                            "timeField": "time_field",
+                            "pageSize": "page_size",
+                            "dealStatus": "deal_status",
+                            "severities": "severities",
+                            "name": "name",
+                            "page": "page",
+                            "sort": "sort"
+                        }
+
+                        mapped_params = {}
+                        for key, value in params.items():
+                            mapped_key = param_mapping.get(key, key)
+                            mapped_params[mapped_key] = value
+
+                        return mapped_params
                     except json.JSONDecodeError:
                         pass
 
@@ -1181,6 +1366,75 @@ class LLMService:
 - 如果有明确的UUID，优先返回uuid
 - 如果用户引用了事件名称（用引号括起或明确表达），提取到name
 - 如果用户说"第一个"/"事件#1"等，尝试从对话历史的incidents_list数据中提取对应UUID
+- 如果都提取不到，返回null
+"""
+
+        try:
+            response = await self.chat(
+                messages=[{"role": "user", "content": extraction_prompt}],
+                provider=provider,
+                api_key=api_key,
+                base_url=base_url
+            )
+
+            if response.get("success"):
+                response_text = response.get("message", "")
+                json_match = re.search(r'\{[^}]+\}', response_text, re.DOTALL)
+                if json_match:
+                    try:
+                        params = json.loads(json_match.group())
+                        return {
+                            "uuid": params.get("uuid"),
+                            "name": params.get("name")
+                        }
+                    except json.JSONDecodeError:
+                        pass
+
+            return {"uuid": None, "name": None}
+
+        except Exception:
+            return {"uuid": None, "name": None}
+
+    async def _extract_incident_entities_params(
+        self,
+        user_message: str,
+        messages: List[Dict[str, str]],
+        provider: str,
+        api_key: str,
+        base_url: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """从用户消息中提取事件外网IP实体查询参数（支持UUID或事件名称）"""
+        history_text = "\n".join([
+            f"{msg.get('role', 'user')}: {msg.get('content', '')}"
+            for msg in messages[-10:]
+        ])
+
+        extraction_prompt = f"""你是一个事件外网IP实体查询参数提取助手。从用户消息中提取事件ID或事件名称。
+
+用户消息: {user_message}
+对话历史: {history_text}
+
+请按优先级提取以下信息：
+1. **uuid**: 事件ID（格式：incident-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx）
+   - 直接提供完整UUID
+   - 引用格式: "第一个事件", "事件 #1", "incident-xxx"
+
+2. **name**: 事件名称（当没有UUID时使用）
+   - 从用户消息中提取引用的事件名称
+   - 通常是引号内的文本，如 "查看'主机存在通用JAVA反序列化攻击'这个事件的外网实体"
+   - 事件名称可能完整或部分匹配
+
+返回 JSON 格式（只返回 JSON，不要其他内容）:
+{{
+  "uuid": "incident-528fdb4e-6720-4b42-8db1-be2e8ba76bec" | null,
+  "name": "主机存在通用JAVA反序列化攻击" | null
+}}
+
+注意：
+- 如果有明确的UUID，优先返回uuid
+- 如果用户引用了事件名称（用引号括起或明确表达），提取到name
+- 如果用户说"第一个"/"事件#1"等，尝试从对话历史的incidents_list数据中提取对应UUID
+- 关键词"外网实体"、"IP实体"、"外网IP"表示这是实体查询请求
 - 如果都提取不到，返回null
 """
 

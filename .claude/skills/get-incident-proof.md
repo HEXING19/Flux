@@ -50,12 +50,21 @@ When user references incidents indirectly:
 ## Conversation Flow
 
 ### Understand Investigation Request
-When users need incident details, they may express needs in various ways:
+
+**IMPORTANT - When NOT to use this skill**:
+- ❌ If user mentions "**外网实体**" or "**IP实体**" → Use **get-incident-entities.md** instead
+- ❌ If user specifically wants "IP地址列表" → Use **get-incident-entities.md** instead
+
+**When users need incident details**, they may express needs in various ways:
 - Requesting evidence or proof ("查看事件详情", "显示举证", "这个事件的证据")
 - Investigating specific incidents ("第一个事件的攻击链", "incident-xxx的详情")
 - Understanding attack progression ("这个事件是怎么发生的", "攻击时间线")
 - Analyzing threat impact ("造成了什么影响", "攻击路径是什么")
 - Requesting forensic data ("时间线", "攻击链", "举证信息")
+
+**DISTINCTION FROM OTHER SKILLS**:
+- This skill (get-incident-proof): Retrieves **evidence/timeline** (举证信息/攻击链/告警详情)
+- get-incident-entities: Retrieves **external IP entities** (外网IP实体)
 
 Your role is to identify the incident from context, retrieve comprehensive evidence, and present it in a clear, chronological format that supports decision-making.
 
@@ -407,3 +416,7 @@ User: "封禁这个事件中的源IP"
 ## Summary
 
 This skill provides detailed incident evidence retrieval and analysis. It parses incident IDs from context, retrieves comprehensive proof information, and presents it in a structured, actionable format. The skill integrates with query and response skills for complete incident investigation workflows.
+
+**IMPORTANT DISTINCTION**:
+- This skill is for **evidence/timeline** (举证/攻击链)
+- For **外网实体/IP实体**, use **get-incident-entities.md** instead

@@ -34,6 +34,10 @@ class IncidentListRequest(BaseModel):
 
     @validator('timeField')
     def validate_time_field(cls, v):
+        # Allow None - will use default value "endTime"
+        if v is None:
+            return v
+
         valid_fields = ["endTime", "startTime", "auditTime", "updateTime", "uploadTime",
                        "occurTime", "insertTime"]
         if v not in valid_fields:
@@ -96,6 +100,13 @@ class IncidentUpdateRequest(BaseModel):
 
 class IncidentUpdateResponse(BaseModel):
     """Response model for incident update"""
+    success: bool
+    message: str
+    data: Optional[dict] = None
+
+
+class IncidentEntitiesResponse(BaseModel):
+    """Response model for incident IP entities"""
     success: bool
     message: str
     data: Optional[dict] = None
@@ -241,3 +252,39 @@ async def update_incident_status(
     )
 
     return IncidentUpdateResponse(**result)
+
+
+@router.get("/{uuid}/entities/ip", response_model=IncidentEntitiesResponse)
+async def get_incident_entities_ip(
+    uuid: str,
+    x_auth_code: Optional[str] = Header(None, alias="X-Auth-Code"),
+    x_base_url: Optional[str] = Header(None, alias="X-Base-Url")
+):
+    """
+    Get incident IP entities by uuId
+
+    Args:
+        uuid: Incident uuId
+        x_auth_code: Flux authentication code (from header)
+        x_base_url: Flux API base URL (from header)
+
+    Returns:
+        IP entities data with threat intelligence and disposition status
+    """
+    if not x_auth_code:
+        raise HTTPException(status_code=400, detail="X-Auth-Code header is required")
+
+    if not x_base_url:
+        raise HTTPException(status_code=400, detail="X-Base-Url header is required")
+
+    # Create service instance
+    service = SecurityIncidentsService()
+
+    # Get incident IP entities
+    result = await service.get_incident_entities_ip(
+        auth_code=x_auth_code,
+        base_url=x_base_url,
+        uuid=uuid
+    )
+
+    return IncidentEntitiesResponse(**result)

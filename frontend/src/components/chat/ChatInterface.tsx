@@ -26,12 +26,14 @@ import { IPBlockSummaryTable } from './IPBlockSummaryTable';
 import { IncidentsListTable } from './IncidentsListTable';
 import { IncidentProofTable } from './IncidentProofTable';
 import { IncidentUpdateTable } from './IncidentUpdateTable';
+import { IncidentEntitiesTable } from './IncidentEntitiesTable';
 import type { AssetParams } from '../../types/asset';
 import type { AssetSummary } from '../../types/asset';
 import type { IPBlockParams, IPBlockStatus, IPBlockSummary } from '../../types/ipblock';
 import type { IncidentsListData } from '../../types/incidents';
 import type { IncidentProofData } from '../../types/incidentProof';
 import type { IncidentUpdateData } from '../../types/incidentUpdate';
+import type { IncidentEntitiesData } from '../../types/incidentEntities';
 import { parseErrorResponse, formatChatMessage, isStructuredError } from '../../utils/errorHelper';
 
 interface Message {
@@ -39,8 +41,8 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
-  type?: 'text' | 'asset_summary' | 'ipblock_status' | 'ipblock_summary' | 'incidents_list' | 'incident_proof' | 'incident_status_updated';
-  data?: AssetSummary | IPBlockStatus | IPBlockSummary | IncidentsListData | IncidentProofData | IncidentUpdateData;
+  type?: 'text' | 'asset_summary' | 'ipblock_status' | 'ipblock_summary' | 'incidents_list' | 'incident_proof' | 'incident_status_updated' | 'incident_entities';
+  data?: AssetSummary | IPBlockStatus | IPBlockSummary | IncidentsListData | IncidentProofData | IncidentUpdateData | IncidentEntitiesData;
 }
 
 interface QuickAction {
@@ -84,7 +86,7 @@ export const ChatInterface = () => {
     {
       id: '1',
       role: 'assistant',
-      content: '您好!我是Flux AI助手。我可以帮助您进行安全配置、威胁分析等任务。请问有什么可以帮您的吗?',
+      content: '您好!我是Flux-你的智能配置助手。我可以帮助您进行产品的安全配置、联动处置等任务。请问有什么可以帮您的吗?',
       timestamp: new Date(),
     },
   ]);
@@ -119,7 +121,7 @@ export const ChatInterface = () => {
       {
         id: '1',
         role: 'assistant',
-        content: '您好!我是Flux AI助手。我可以帮助您进行安全配置、威胁分析等任务。请问有什么可以帮您的吗?',
+        content: '您好!我是Flux-你的智能配置助手。我可以帮助您进行产品的安全配置、联动处置等任务。请问有什么可以帮您的吗?',
         timestamp: new Date(),
       },
     ]);
@@ -255,7 +257,34 @@ export const ChatInterface = () => {
           },
         };
         setMessages((prev) => [...prev, updateResult]);
+      } else if (data.type === 'incident_entities' && data.entities_data) {
+        // DEBUG LOG
+        console.log('DEBUG: Received incident_entities response', {
+          type: data.type,
+          has_entities_data: !!data.entities_data,
+          entities_data_keys: data.entities_data ? Object.keys(data.entities_data) : null,
+          entities_data: data.entities_data
+        });
+
+        // 显示IP实体列表
+        const entitiesMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: data.message || '事件外网IP实体',
+          timestamp: new Date(),
+          type: 'incident_entities',
+          data: data.entities_data,
+        };
+        setMessages((prev) => [...prev, entitiesMessage]);
       } else {
+        // DEBUG LOG - Check what type we received
+        console.log('DEBUG: Falling through to else block', {
+          data_type: data.type,
+          has_entities_data: !!data.entities_data,
+          data_keys: Object.keys(data),
+          full_data: data
+        });
+
         // 普通消息
         const assistantMessage: Message = {
           id: (Date.now() + 1).toString(),
@@ -534,7 +563,7 @@ export const ChatInterface = () => {
                       borderRadius: 2,
                       bgcolor: message.role === 'user' ? 'primary.main' : 'grey.100',
                       color: message.role === 'user' ? 'white' : 'text.primary',
-                      minWidth: message.type === 'asset_summary' || message.type === 'ipblock_status' || message.type === 'ipblock_summary' || message.type === 'incidents_list' || message.type === 'incident_proof' || message.type === 'incident_status_updated' ? '400px' : 'auto',
+                      minWidth: message.type === 'asset_summary' || message.type === 'ipblock_status' || message.type === 'ipblock_summary' || message.type === 'incidents_list' || message.type === 'incident_proof' || message.type === 'incident_status_updated' || message.type === 'incident_entities' ? '400px' : 'auto',
                     }}
                   >
                     {message.type === 'asset_summary' && message.data ? (
@@ -549,6 +578,11 @@ export const ChatInterface = () => {
                       <IncidentProofTable data={message.data as IncidentProofData} />
                     ) : message.type === 'incident_status_updated' && message.data ? (
                       <IncidentUpdateTable data={message.data as IncidentUpdateData} />
+                    ) : message.type === 'incident_entities' && message.data ? (
+                      <IncidentEntitiesTable
+                        entities={(message.data as IncidentEntitiesData).item || []}
+                        incidentId={message.content}
+                      />
                     ) : (
                       <Typography variant="body2" sx={{ lineHeight: 1.6 }}>
                         {message.content}
