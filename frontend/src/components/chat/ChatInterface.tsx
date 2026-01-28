@@ -14,9 +14,6 @@ import {
   SmartToy,
   Person,
   Add,
-  Security,
-  Analytics,
-  Settings,
 } from '@mui/icons-material';
 import { AssetConfirmationDialog } from './AssetConfirmationDialog';
 import { AssetSummaryTable } from './AssetSummaryTable';
@@ -27,6 +24,7 @@ import { IncidentsListTable } from './IncidentsListTable';
 import { IncidentProofTable } from './IncidentProofTable';
 import { IncidentUpdateTable } from './IncidentUpdateTable';
 import { IncidentEntitiesTable } from './IncidentEntitiesTable';
+import { SkillsPanel } from './SkillsPanel';
 import type { AssetParams } from '../../types/asset';
 import type { AssetSummary } from '../../types/asset';
 import type { IPBlockParams, IPBlockStatus, IPBlockSummary } from '../../types/ipblock';
@@ -44,42 +42,6 @@ interface Message {
   type?: 'text' | 'asset_summary' | 'ipblock_status' | 'ipblock_summary' | 'incidents_list' | 'incident_proof' | 'incident_status_updated' | 'incident_entities';
   data?: AssetSummary | IPBlockStatus | IPBlockSummary | IncidentsListData | IncidentProofData | IncidentUpdateData | IncidentEntitiesData;
 }
-
-interface QuickAction {
-  id: string;
-  title: string;
-  description: string;
-  icon: React.ReactNode;
-  prompt: string;
-  color: string;
-}
-
-const quickActions: QuickAction[] = [
-  {
-    id: 'security',
-    title: '安全配置',
-    description: '进行安全平台配置和策略设置',
-    icon: <Security />,
-    prompt: '帮我进行安全配置',
-    color: '#1976d2',
-  },
-  {
-    id: 'threat',
-    title: '威胁分析',
-    description: '分析当前安全威胁和风险',
-    icon: <Analytics />,
-    prompt: '分析当前安全威胁',
-    color: '#2e7d32',
-  },
-  {
-    id: 'integration',
-    title: '联动设置',
-    description: '配置平台间的联动规则',
-    icon: <Settings />,
-    prompt: '如何配置平台联动?',
-    color: '#ed6c02',
-  },
-];
 
 export const ChatInterface = () => {
   const [messages, setMessages] = useState<Message[]>([
@@ -510,13 +472,6 @@ export const ChatInterface = () => {
     setMessages((prev) => [...prev, cancelMessage]);
   };
 
-  const handleQuickAction = (prompt: string) => {
-    setInput(prompt);
-  };
-
-  // 只有在第一轮对话时显示快捷操作
-  const showQuickActions = messages.length <= 1;
-
   return (
     <Box
       sx={{
@@ -640,49 +595,8 @@ export const ChatInterface = () => {
 
       {/* 输入区域 */}
       <Box sx={{ borderTop: '1px solid', borderColor: 'divider' }}>
-        {/* 快捷操作按钮 - 只在初始会话显示 */}
-        {showQuickActions && !loading && (
-          <Box sx={{ px: 2, pt: 1.5, pb: 1 }}>
-            <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
-              {quickActions.map((action) => (
-                <Paper
-                  key={action.id}
-                  elevation={0}
-                  onClick={() => handleQuickAction(action.prompt)}
-                  sx={{
-                    p: 0.75,
-                    px: 1.25,
-                    borderRadius: 1.5,
-                    border: '1px solid',
-                    borderColor: 'divider',
-                    cursor: 'pointer',
-                    transition: 'all 0.2s',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 0.5,
-                    minWidth: 'fit-content',
-                    '&:hover': {
-                      borderColor: action.color,
-                      bgcolor: `${action.color}08`,
-                      transform: 'translateY(-1px)',
-                      boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
-                    },
-                  }}
-                >
-                  <Box sx={{ color: action.color, fontSize: 18 }}>
-                    {action.icon}
-                  </Box>
-                  <Typography variant="body2" sx={{ fontWeight: 500, fontSize: '0.875rem' }}>
-                    {action.title}
-                  </Typography>
-                </Paper>
-              ))}
-            </Box>
-          </Box>
-        )}
-
         {/* 输入框和按钮 */}
-        <Box sx={{ pt: 2, px: 2, pb: 2 }}>
+        <Box sx={{ px: 2, py: 2 }}>
           <Stack direction="row" spacing={2} alignItems="flex-end">
             {/* 新会话按钮 */}
             <Button
@@ -705,6 +619,9 @@ export const ChatInterface = () => {
             >
               新会话
             </Button>
+
+            {/* Skills Panel */}
+            <SkillsPanel onPromptSelect={setInput} />
 
             <TextField
               fullWidth
