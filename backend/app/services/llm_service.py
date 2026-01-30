@@ -289,24 +289,31 @@ class LLMService:
                 return chat_result
 
             # Step 1: 检测意图
-            try:
-                intent_result = await self._detect_intent(
-                    user_message, provider, api_key, base_url
-                )
-            except Exception:
-                # 意图检测失败，按普通聊天处理
-                chat_result = await self.chat(messages, provider, api_key, base_url)
-                chat_result["type"] = "text"
-                return chat_result
+            # 先检查场景确认关键词（优先级最高，避免误识别）
+            if "确认执行" in user_message or "confirm" in user_message.lower():
+                # 场景确认消息，直接识别为场景意图
+                intent = "daily_high_risk_closure"
+                confidence = 1.0
+            else:
+                # 其他情况，使用LLM进行意图识别
+                try:
+                    intent_result = await self._detect_intent(
+                        user_message, provider, api_key, base_url
+                    )
+                except Exception:
+                    # 意图检测失败，按普通聊天处理
+                    chat_result = await self.chat(messages, provider, api_key, base_url)
+                    chat_result["type"] = "text"
+                    return chat_result
 
-            intent = intent_result.get("intent", "general_chat")
-            confidence = intent_result.get("confidence", 0.0)
+                intent = intent_result.get("intent", "general_chat")
+                confidence = intent_result.get("confidence", 0.0)
 
-            # 置信度太低，按普通聊天处理
-            if confidence < 0.7:
-                chat_result = await self.chat(messages, provider, api_key, base_url)
-                chat_result["type"] = "text"
-                return chat_result
+                # 置信度太低，按普通聊天处理
+                if confidence < 0.7:
+                    chat_result = await self.chat(messages, provider, api_key, base_url)
+                    chat_result["type"] = "text"
+                    return chat_result
 
             # 处理不同的意图
             if intent == "add_asset":
@@ -336,6 +343,16 @@ class LLMService:
                 )
             elif intent == "update_incident_status":
                 return await self._handle_update_incident_status_intent(
+                    user_message, messages, provider, api_key, base_url,
+                    auth_code, flux_base_url
+                )
+            elif intent == "get_log_count":
+                return await self._handle_get_log_count_intent(
+                    user_message, messages, provider, api_key, base_url,
+                    auth_code, flux_base_url
+                )
+            elif intent == "daily_high_risk_closure":
+                return await self._handle_scenario_intent(
                     user_message, messages, provider, api_key, base_url,
                     auth_code, flux_base_url
                 )
@@ -378,11 +395,13 @@ class LLMService:
 4. 查看事件详情 (get_incident_proof) - 查看事件详情、查看举证、查看攻击链、查看事件证据
 5. 查看事件外网IP实体 (get_incident_entities) - 查看外网实体、查看IP实体、查看外网IP、查看IP地址列表
 6. 更新事件状态 (update_incident_status) - 标记事件状态、处置事件、修改处置状态、批量更新
-7. 普通聊天 (general_chat) - 其他对话
+7. 查询日志统计 (get_log_count) - 统计日志数量、查询日志总数、日志统计、日志分布、日志趋势
+8. 每日高危事件闭环 (daily_high_risk_closure) - 执行每日高危事件自动闭环场景、自动处置高危事件
+9. 普通聊天 (general_chat) - 其他对话
 
 返回 JSON 格式（只返回 JSON，不要其他内容）:
 {{
-  "intent": "add_asset" | "ipblock" | "get_incidents" | "get_incident_proof" | "get_incident_entities" | "update_incident_status" | "general_chat",
+  "intent": "add_asset" | "ipblock" | "get_incidents" | "get_incident_proof" | "get_incident_entities" | "update_incident_status" | "get_log_count" | "daily_high_risk_closure" | "general_chat",
   "confidence": 0.0-1.0,
   "reasoning": "判断理由"
 }}"""
@@ -750,7 +769,7 @@ class LLMService:
 
 请提取以下信息：
 - ip_address: IP地址（必填，如 192.168.1.100）
-- device_name: 设备名称（如 AF1, AF-01）
+- device_name: 设备名称（如 物联网安全网关）
 - device_type: 设备类型（AF=网侧设备, EDR=端侧设备，默认AF）
 - action: 操作类型
   * "check" - 仅查询IP封禁状态
@@ -765,7 +784,7 @@ class LLMService:
 返回 JSON 格式（只返回 JSON，不要其他内容）:
 {{
   "ip_address": "192.168.1.100" | null,
-  "device_name": "AF1" | null,
+  "device_name": "物联网安全网关" | null,
   "device_type": "AF" | "EDR" | null,
   "action": "check" | "block" | "check_and_block",
   "block_type": "SRC_IP" | "DST_IP" | "URL" | "DNS" | null,
@@ -1295,10 +1314,26 @@ class LLMService:
 
             if response.get("success"):
                 response_text = response.get("message", "")
-                json_match = re.search(r'\{[^}]+\}', response_text, re.DOTALL)
-                if json_match:
+                # Use a more robust method to extract JSON with nested arrays/objects
+                # Find matching outermost braces
+                start_idx = response_text.find('{')
+                json_text = None
+                if start_idx != -1:
+                    # Find matching closing brace by counting
+                    count = 1
+                    idx = start_idx + 1
+                    while idx < len(response_text) and count > 0:
+                        if response_text[idx] == '{':
+                            count += 1
+                        elif response_text[idx] == '}':
+                            count -= 1
+                        idx += 1
+                    if count == 0:
+                        json_text = response_text[start_idx:idx]
+
+                if json_text:
                     try:
-                        params = json.loads(json_match.group())
+                        params = json.loads(json_text)
 
                         # Map camelCase parameter names to snake_case for function signature
                         param_mapping = {
@@ -1315,6 +1350,13 @@ class LLMService:
 
                         mapped_params = {}
                         for key, value in params.items():
+                            # Skip null values
+                            if value is None:
+                                continue
+                            # Skip empty arrays (but keep empty strings if needed)
+                            if isinstance(value, list) and len(value) == 0:
+                                continue
+
                             mapped_key = param_mapping.get(key, key)
                             mapped_params[mapped_key] = value
 
@@ -1597,3 +1639,374 @@ class LLMService:
 
         except Exception:
             return {}
+
+    async def _extract_log_count_params(
+        self,
+        user_message: str,
+        messages: List[Dict[str, str]],
+        provider: str,
+        api_key: str,
+        base_url: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """从用户消息中提取日志统计参数"""
+        from datetime import datetime
+
+        # Get current time for LLM reference
+        current_time = datetime.now()
+        current_timestamp = int(current_time.timestamp())
+
+        # Format conversation history
+        history_text = "\n".join([
+            f"{msg.get('role', 'user')}: {msg.get('content', '')}"
+            for msg in messages[-5:]
+        ])
+
+        # Determine if user wants analysis (趋势、分布、异常)
+        user_message_lower = user_message.lower()
+        include_comparison = False
+        include_distribution = False
+        include_trend = False
+
+        if any(keyword in user_message_lower for keyword in ["趋势", "对比", "trend", "compare", "增长", "下降", "变化"]):
+            include_comparison = True
+            include_trend = True
+        elif any(keyword in user_message_lower for keyword in ["分布", "占比", "比例"]):
+            include_distribution = True
+        elif any(keyword in user_message_lower for keyword in ["异常", "突增", "骤降", "anomaly"]):
+            include_comparison = True
+            include_distribution = True
+            include_trend = True
+
+        extraction_prompt = f"""你是一个日志统计参数提取助手。从用户消息中提取日志统计参数。
+
+当前时间：{current_time.strftime('%Y-%m-%d %H:%M:%S')}
+当前时间戳：{current_timestamp}
+
+用户消息: {user_message}
+对话历史: {history_text}
+
+请提取以下信息：
+- startTimestamp: 起始时间戳（Unix时间戳，近X天 = current_timestamp - X*86400）
+- endTimestamp: 结束时间戳（通常为当前时间戳）
+- productTypes: 产品类型 ["EDR", "AC", "NTA", "STA", "CWPP", "SSL VPN", "Logger"]
+- accessDirections: 访问方向 [1=外对内, 2=内对外, 3=内对内]
+- threatClasses: 威胁一级分类 ["94"=Web攻击, "214"=暴力破解, "500"=病毒, "400"=扫描, "300"=DDoS]
+- srcIps: 源IP数组
+- dstIps: 目的IP数组
+- attackStates: 攻击状态 [0=尝试, 1=失败, 2=成功, 3=失陷]
+- severities: 严重等级 [0=信息, 1=低危, 2=中危, 3=高危, 4=严重]
+- includeComparison: {str(include_comparison).lower()}
+- includeDistribution: {str(include_distribution).lower()}
+- includeTrend: {str(include_trend).lower()}
+
+返回 JSON 格式（只返回 JSON）:
+{{"startTimestamp": 1706745600 | null, "endTimestamp": 1706832000 | null, "productTypes": ["EDR"] | null, "accessDirections": [1] | null, "threatClasses": ["94"] | null, "srcIps": ["192.168.1.100"] | null, "dstIps": ["8.8.8.8"] | null, "attackStates": [0] | null, "severities": [3, 4] | null}}
+"""
+
+        try:
+            response = await self.chat(
+                messages=[{"role": "user", "content": extraction_prompt}],
+                provider=provider,
+                api_key=api_key,
+                base_url=base_url
+            )
+
+            if response.get("success"):
+                response_text = response.get("message", "")
+                json_match = re.search(r'\{[^}]+\}', response_text, re.DOTALL)
+                if json_match:
+                    try:
+                        params = json.loads(json_match.group())
+                        
+                        # Map camelCase to snake_case
+                        param_mapping = {
+                            "startTimestamp": "start_timestamp",
+                            "endTimestamp": "end_timestamp",
+                            "productTypes": "product_types",
+                            "accessDirections": "access_directions",
+                            "threatClasses": "threat_classes",
+                            "srcIps": "src_ips",
+                            "dstIps": "dst_ips",
+                            "attackStates": "attack_states",
+                            "severities": "severities",
+                            "includeComparison": "include_comparison",
+                            "includeDistribution": "include_distribution",
+                            "includeTrend": "include_trend"
+                        }
+                        
+                        mapped_params = {}
+                        for key, value in params.items():
+                            mapped_key = param_mapping.get(key, key)
+                            mapped_params[mapped_key] = value
+
+                        # 添加分析标志位（不依赖LLM返回，使用关键词检测结果）
+                        mapped_params["include_comparison"] = include_comparison
+                        mapped_params["include_distribution"] = include_distribution
+                        mapped_params["include_trend"] = include_trend
+
+                        return mapped_params
+                    except json.JSONDecodeError:
+                        pass
+            
+            return {}
+        
+        except Exception:
+            return {}
+
+    async def _handle_get_log_count_intent(
+        self,
+        user_message: str,
+        messages: List[Dict[str, str]],
+        provider: str,
+        api_key: str,
+        base_url: Optional[str] = None,
+        auth_code: Optional[str] = None,
+        flux_base_url: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """处理日志统计意图"""
+        try:
+            # Extract parameters
+            extracted_params = await self._extract_log_count_params(
+                user_message, messages, provider, api_key, base_url
+            )
+        except Exception:
+            # Fallback to normal chat
+            chat_result = await self.chat(messages, provider, api_key, base_url)
+            chat_result["type"] = "text"
+            return chat_result
+        
+        # Validate auth
+        if not auth_code or not flux_base_url:
+            return {
+                "success": True,
+                "type": "text",
+                "message": "缺少 Flux 认证信息。请先登录系统。"
+            }
+        
+        # Call service
+        from .network_logs_service import NetworkLogsService
+        service = NetworkLogsService()
+        
+        result = await service.get_log_count(
+            auth_code=auth_code,
+            base_url=flux_base_url,
+            **extracted_params
+        )
+        
+        # Return result
+        if result.get("success"):
+            data = result.get("data", {})
+            total = data.get("total", 0)
+            
+            # Build message
+            filters = data.get("filters", {})
+            filter_desc = []
+            
+            if filters.get("productTypes"):
+                filter_desc.append(f"产品类型: {', '.join(filters['productTypes'])}")
+            if filters.get("severities"):
+                sev_names = {0: "信息", 1: "低危", 2: "中危", 3: "高危", 4: "严重"}
+                filter_desc.append(f"严重等级: {', '.join([sev_names.get(s, str(s)) for s in filters['severities']])}")
+            if filters.get("accessDirections"):
+                dir_names = {1: "外对内", 2: "内对外", 3: "内对内"}
+                filter_desc.append(f"访问方向: {', '.join([dir_names.get(d, str(d)) for d in filters['accessDirections']])}")
+            
+            is_enhanced = data.get("comparisons") or data.get("distributions") or data.get("trend")
+            
+            if is_enhanced:
+                msg = f"查询成功！符合条件的日志总数：{total:,} 条\n\n"
+                if filter_desc:
+                    msg += "查询条件：\n  • " + "\n  • ".join(filter_desc) + "\n"
+                
+                if data.get("comparisons"):
+                    msg += "\n趋势对比：\n"
+                    if "last_week" in data["comparisons"]:
+                        lw = data["comparisons"]["last_week"]
+                        msg += f"  环比上周: {lw['change_percent']:+.1f}%\n"
+                    if "last_month" in data["comparisons"]:
+                        lm = data["comparisons"]["last_month"]
+                        msg += f"  环比上月: {lm['change_percent']:+.1f}%\n"
+            else:
+                msg = f"查询成功！符合条件的日志总数：{total:,} 条"
+                if filter_desc:
+                    msg += "\n\n查询条件：\n  • " + "\n  • ".join(filter_desc)
+            
+            return {
+                "success": True,
+                "type": "log_count",
+                "message": msg,
+                "log_count_data": data
+            }
+        else:
+            return {
+                "success": True,
+                "type": "text",
+                "message": f"查询失败：{result.get('message', '未知错误')}"
+            }
+
+    async def _handle_scenario_intent(
+        self,
+        user_message: str,
+        messages: List[Dict[str, str]],
+        provider: str,
+        api_key: str,
+        base_url: Optional[str] = None,
+        auth_code: Optional[str] = None,
+        flux_base_url: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """处理每日高危事件闭环场景意图"""
+        try:
+            # 检查用户消息中是否包含场景确认指令
+            # 例如："确认执行场景处置：事件ID xxx，封禁IP yyy"
+            if "确认执行" in user_message or "confirm" in user_message.lower():
+                # 这是步骤4的确认指令，提取参数并执行
+                return await self._handle_scenario_confirm(
+                    user_message, auth_code, flux_base_url
+                )
+            else:
+                # 这是步骤1-3的启动指令
+                return await self._handle_scenario_start(
+                    auth_code, flux_base_url, provider, api_key, base_url
+                )
+        except Exception as e:
+            # 出错时回退到普通聊天
+            chat_result = await self.chat(messages, provider, api_key, base_url)
+            chat_result["type"] = "text"
+            return chat_result
+
+    async def _handle_scenario_start(
+        self,
+        auth_code: str,
+        flux_base_url: str,
+        provider: str,
+        api_key: str,
+        llm_base_url: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """启动场景任务（步骤1-3）"""
+        if not auth_code or not flux_base_url:
+            return {
+                "success": True,
+                "type": "text",
+                "message": "缺少 Flux 认证信息。请先登录系统。"
+            }
+
+        try:
+            from .scenario_orchestration_service import ScenarioOrchestrationService
+
+            service = ScenarioOrchestrationService()
+
+            result = await service.execute_daily_high_risk_closure(
+                auth_code=auth_code,
+                base_url=flux_base_url,
+                provider=provider,
+                api_key=api_key,
+                llm_base_url=llm_base_url
+            )
+
+            if result.get("success"):
+                if result.get("completed") and result.get("step") == 1:
+                    # 无事件需要处理
+                    return {
+                        "success": True,
+                        "type": "text",
+                        "message": result.get("message", "✅ 今日暂无未处置的高危事件")
+                    }
+                elif result.get("awaiting_confirmation"):
+                    # 需要用户确认，返回场景数据
+                    return {
+                        "success": True,
+                        "type": "scenario_start",
+                        "message": result.get("message", "已分析事件，等待确认"),
+                        "scenario_data": result.get("data", {})
+                    }
+                else:
+                    # 其他情况
+                    return {
+                        "success": True,
+                        "type": "text",
+                        "message": result.get("message", "场景执行完成")
+                    }
+            else:
+                # 场景执行失败
+                return {
+                    "success": True,
+                    "type": "text",
+                    "message": f"场景执行失败: {result.get('message', '未知错误')}"
+                }
+        except Exception as e:
+            return {
+                "success": True,
+                "type": "text",
+                "message": f"场景执行失败: {str(e)}"
+            }
+
+    async def _handle_scenario_confirm(
+        self,
+        user_message: str,
+        auth_code: str,
+        flux_base_url: str
+    ) -> Dict[str, Any]:
+        """确认并执行场景任务（步骤4）"""
+        if not auth_code or not flux_base_url:
+            return {
+                "success": True,
+                "type": "text",
+                "message": "缺少 Flux 认证信息。请先登录系统。"
+            }
+
+        try:
+            import re
+            from .scenario_orchestration_service import ScenarioOrchestrationService
+
+            # 从用户消息中提取参数
+            # 格式: "确认执行场景处置：事件ID xxx,yyy,zzz，封禁IP aaa.bbb.ccc.ddd, eee.fff.ggg.hhh"
+            incident_ids_match = re.search(r'事件ID\s+([^\s，]+(?:\s*,\s*[^\s，]+)*)', user_message)
+            # 匹配IP地址到字符串结尾（允许点号和逗号）
+            ips_match = re.search(r'封禁IP\s+(.+?)$', user_message)
+
+            incident_ids_str = incident_ids_match.group(1) if incident_ids_match else ""
+            ips_str = ips_match.group(1) if ips_match else ""
+
+            # 解析事件ID列表
+            incident_ids = [iid.strip() for iid in incident_ids_str.split(',') if iid.strip()] if incident_ids_str else []
+
+            # 解析IP列表
+            ips_to_block = [ip.strip() for ip in ips_str.split(',') if ip.strip()] if ips_str else []
+
+            if not incident_ids:
+                return {
+                    "success": True,
+                    "type": "text",
+                    "message": "未找到事件ID，无法执行场景处置"
+                }
+
+            service = ScenarioOrchestrationService()
+
+            result = await service.confirm_and_execute(
+                auth_code=auth_code,
+                base_url=flux_base_url,
+                incident_ids=incident_ids,
+                ips_to_block=ips_to_block,
+                device_name="物联网安全网关",
+                block_duration_days=7
+            )
+
+            if result.get("success"):
+                return {
+                    "success": True,
+                    "type": "scenario_completed",
+                    "message": result.get("message", "场景执行完成"),
+                    "scenario_result": result.get("results", {})
+                }
+            else:
+                return {
+                    "success": True,
+                    "type": "text",
+                    "message": result.get("message", "场景执行失败")
+                }
+        except Exception as e:
+            return {
+                "success": True,
+                "type": "text",
+                "message": f"场景执行失败: {str(e)}"
+            }

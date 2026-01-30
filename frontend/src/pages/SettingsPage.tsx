@@ -35,6 +35,39 @@ interface LLMConfig {
   baseUrl: string;
 }
 
+// 默认配置常量
+const DEFAULT_LLM_CONFIG: LLMConfig = {
+  provider: 'zhipu',
+  apiKey: '',
+  baseUrl: 'https://open.bigmodel.cn/api/paas/v4/',
+};
+
+/**
+ * 从localStorage读取已保存的LLM配置
+ * 如果不存在或无效，返回默认配置
+ */
+function getInitialLLMConfig(): LLMConfig {
+  try {
+    const savedConfig = localStorage.getItem('llmConfig');
+    if (savedConfig) {
+      const parsed = JSON.parse(savedConfig) as Partial<LLMConfig>;
+
+      // 验证必需字段是否存在
+      if (parsed.provider && parsed.baseUrl) {
+        return {
+          provider: parsed.provider,
+          apiKey: parsed.apiKey || '',  // apiKey可能为空，这是允许的
+          baseUrl: parsed.baseUrl,
+        };
+      }
+    }
+  } catch (error) {
+    console.warn('Failed to load saved LLM config:', error);
+  }
+
+  return DEFAULT_LLM_CONFIG;
+}
+
 const providers = [
   { value: 'zhipu', label: '智谱AI', model: 'GLM-4.7', icon: '🤖', color: '#1976d2' },
   { value: 'openai', label: 'OpenAI', model: 'GPT-4', icon: '🧠', color: '#00a67e' },
@@ -45,11 +78,7 @@ const providers = [
 
 export const SettingsPage = () => {
   const navigate = useNavigate();
-  const [llmConfig, setLlmConfig] = useState<LLMConfig>({
-    provider: 'zhipu',
-    apiKey: '',
-    baseUrl: 'https://open.bigmodel.cn/api/paas/v4/',
-  });
+  const [llmConfig, setLlmConfig] = useState<LLMConfig>(getInitialLLMConfig);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{
     success: boolean;

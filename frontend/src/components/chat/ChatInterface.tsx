@@ -8,12 +8,19 @@ import {
   Avatar,
   Stack,
   Tooltip,
+  Alert,
+  List,
+  ListItem,
+  ListItemText,
+  Divider,
 } from '@mui/material';
 import {
   Send,
   SmartToy,
   Person,
   Add,
+  CheckCircle,
+  Error,
 } from '@mui/icons-material';
 import { AssetConfirmationDialog } from './AssetConfirmationDialog';
 import { AssetSummaryTable } from './AssetSummaryTable';
@@ -25,6 +32,7 @@ import { IncidentProofTable } from './IncidentProofTable';
 import { IncidentUpdateTable } from './IncidentUpdateTable';
 import { IncidentEntitiesTable } from './IncidentEntitiesTable';
 import { SkillsPanel } from './SkillsPanel';
+import { ScenarioProgressDialog } from './ScenarioProgressDialog';
 import type { AssetParams } from '../../types/asset';
 import type { AssetSummary } from '../../types/asset';
 import type { IPBlockParams, IPBlockStatus, IPBlockSummary } from '../../types/ipblock';
@@ -32,15 +40,21 @@ import type { IncidentsListData } from '../../types/incidents';
 import type { IncidentProofData } from '../../types/incidentProof';
 import type { IncidentUpdateData } from '../../types/incidentUpdate';
 import type { IncidentEntitiesData } from '../../types/incidentEntities';
+import type { LogCountData } from '../../types/logCount';
+import type { ScenarioState } from '../../types/scenario';
+import type { ViewMode } from '../../types/cockpit';
+import { LogCountTable } from './LogCountTable';
 import { parseErrorResponse, formatChatMessage, isStructuredError } from '../../utils/errorHelper';
+import { SecurityCockpit } from '../cockpit/SecurityCockpit';
+import { ModeToggleButton } from '../cockpit/ModeToggleButton';
 
 interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
-  type?: 'text' | 'asset_summary' | 'ipblock_status' | 'ipblock_summary' | 'incidents_list' | 'incident_proof' | 'incident_status_updated' | 'incident_entities';
-  data?: AssetSummary | IPBlockStatus | IPBlockSummary | IncidentsListData | IncidentProofData | IncidentUpdateData | IncidentEntitiesData;
+  type?: 'text' | 'asset_summary' | 'ipblock_status' | 'ipblock_summary' | 'incidents_list' | 'incident_proof' | 'incident_status_updated' | 'incident_entities' | 'log_count' | 'scenario_start' | 'scenario_completed';
+  data?: AssetSummary | IPBlockStatus | IPBlockSummary | IncidentsListData | IncidentProofData | IncidentUpdateData | IncidentEntitiesData | LogCountData | any;
 }
 
 export const ChatInterface = () => {
@@ -57,6 +71,9 @@ export const ChatInterface = () => {
   const [conversationId, setConversationId] = useState<string>(Date.now().toString());
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // View mode state
+  const [viewMode, setViewMode] = useState<ViewMode>('chat');
+
   // 资产确认对话框状态
   const [confirmationOpen, setConfirmationOpen] = useState(false);
   const [pendingParams, setPendingParams] = useState<AssetParams | null>(null);
@@ -68,6 +85,24 @@ export const ChatInterface = () => {
   const [confirmingIPBlock, setConfirmingIPBlock] = useState(false);
   const [ipBlockError, setIPBlockError] = useState<string | null>(null);
 
+  // 场景任务状态
+  const [scenarioState, setScenarioState] = useState<ScenarioState>({
+    open: false,
+    scenarioId: null,
+    currentStep: 0,
+    step1Status: 'idle',
+    step2Status: 'idle',
+    step3Status: 'idle',
+    step1Data: null,
+    step2Data: null,
+    step3Data: null,
+    incidentId: null,
+    incidentIds: [],
+    ipsToBlock: [],
+    error: null,
+  });
+  const [confirmingScenario, setConfirmingScenario] = useState(false);
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
@@ -75,6 +110,16 @@ export const ChatInterface = () => {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // 清理SSE连接
+  useEffect(() => {
+    return () => {
+      const eventSource = (window as any).scenarioEventSource;
+      if (eventSource) {
+        eventSource.close();
+      }
+    };
+  }, []);
 
   const handleNewChat = () => {
     const newConversationId = Date.now().toString();
@@ -238,6 +283,90 @@ export const ChatInterface = () => {
           data: data.entities_data,
         };
         setMessages((prev) => [...prev, entitiesMessage]);
+      } else if (data.type === 'log_count' && data.log_count_data) {
+        // 显示日志统计结果
+        const logCountMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: data.message || '日志统计结果',
+          timestamp: new Date(),
+          type: 'log_count',
+          data: data.log_count_data,
+        };
+        setMessages((prev) => [...prev, logCountMessage]);
+      } else if (data.type === 'scenario_start' && data.scenario_data) {
+        // 渐进式展示步骤进度
+        // 先显示对话框，所有步骤为loading状态
+        setScenarioState({
+          open: true,
+          scenarioId: 'daily-high-risk-closure',
+          currentStep: 0,
+          step1Status: 'loading',
+          step2Status: 'loading',
+          step3Status: 'loading',
+          step1Data: null,
+          step2Data: null,
+          step3Data: null,
+          incidentId: data.scenario_data.incident_ids?.[0] || null,
+          incidentIds: data.scenario_data.incident_ids || [],
+          ipsToBlock: data.scenario_data.ips_to_block,
+          error: null,
+        });
+
+        // 保存步骤数据
+        const step1Data = data.scenario_data.step1;
+        const step2Data = data.scenario_data.step2;
+        const step3Data = data.scenario_data.step3;
+
+        // 步骤1完成（500ms后）
+        setTimeout(() => {
+          setScenarioState(prev => ({
+            ...prev,
+            currentStep: 1,
+            step1Status: 'completed',
+            step1Data: step1Data,
+          }));
+        }, 500);
+
+        // 步骤2完成（1500ms后）
+        setTimeout(() => {
+          setScenarioState(prev => ({
+            ...prev,
+            currentStep: 2,
+            step2Status: 'completed',
+            step2Data: step2Data,
+          }));
+        }, 1500);
+
+        // 步骤3完成（2500ms后）
+        setTimeout(() => {
+          setScenarioState(prev => ({
+            ...prev,
+            currentStep: 3,
+            step3Status: 'completed',
+            step3Data: step3Data,
+          }));
+        }, 2500);
+
+        // 添加临时消息
+        const tempMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: data.message || '场景已启动，正在分析...',
+          timestamp: new Date(),
+        };
+        setMessages((prev) => [...prev, tempMessage]);
+      } else if (data.type === 'scenario_completed' && data.scenario_result) {
+        // 显示场景执行结果
+        const resultMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: data.message || '场景执行完成',
+          timestamp: new Date(),
+          type: 'scenario_completed',
+          data: data.scenario_result,
+        };
+        setMessages((prev) => [...prev, resultMessage]);
       } else {
         // DEBUG LOG - Check what type we received
         console.log('DEBUG: Falling through to else block', {
@@ -472,6 +601,382 @@ export const ChatInterface = () => {
     setMessages((prev) => [...prev, cancelMessage]);
   };
 
+  // 处理场景启动
+  const handleScenarioStart = async (scenarioId: string) => {
+    console.log('handleScenarioStart called with scenarioId:', scenarioId);
+    try {
+      // 直接启动场景，跳过确认对话框
+      await handleScenarioStartConfirm();
+      console.log('handleScenarioStartConfirm completed');
+    } catch (error) {
+      console.error('Error in handleScenarioStart:', error);
+    }
+  };
+
+  // 处理场景启动确认
+  const handleScenarioStartConfirm = async () => {
+    console.log('handleScenarioStartConfirm called');
+
+    // 1. 立即显示场景进度对话框（所有步骤loading状态）
+    const newState = {
+      open: true,
+      scenarioId: 'daily-high-risk-closure',
+      currentStep: 0,
+      step1Status: 'loading',
+      step2Status: 'loading',
+      step3Status: 'loading',
+      step1Data: null,
+      step2Data: null,
+      step3Data: null,
+      incidentId: null,
+      incidentIds: [],
+      ipsToBlock: [],
+      error: null,
+    };
+    console.log('Setting scenarioState to:', newState);
+    setScenarioState(newState);
+    console.log('scenarioState updated, open should be true now');
+
+    // 2. 添加用户消息到聊天界面
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      role: 'user',
+      content: '执行每日高危事件闭环场景',
+      timestamp: new Date(),
+    };
+    setMessages((prev) => [...prev, userMessage]);
+    setLoading(true);
+
+    try {
+      // 3. 从localStorage获取配置
+      const llmConfigStr = localStorage.getItem('llmConfig');
+      if (!llmConfigStr) {
+        throw new Error('请先在设置页面配置大模型API');
+      }
+      const llmConfig = JSON.parse(llmConfigStr);
+      const fluxAuthCode = localStorage.getItem('flux_auth_code');
+      const fluxBaseUrl = localStorage.getItem('flux_base_url');
+
+      // 4. 构建查询参数
+      const params = new URLSearchParams({
+        auth_code: fluxAuthCode || '',
+        flux_base_url: fluxBaseUrl || '',
+        provider: llmConfig.provider || '',
+        api_key: llmConfig.apiKey || '',
+        llm_base_url: llmConfig.baseUrl || '',
+      });
+
+      // 5. 建立SSE连接
+      console.log('About to establish SSE connection');
+      const eventSource = new EventSource(
+        `http://localhost:8000/api/v1/llm/scenario/stream?${params.toString()}`
+      );
+      console.log('EventSource created:', eventSource);
+
+      // 添加open事件监听器
+      eventSource.addEventListener('open', () => {
+        console.log('SSE connection opened successfully');
+      });
+
+      // 6. 监听step_complete事件
+      eventSource.addEventListener('step_complete', (event: any) => {
+        try {
+          const data = JSON.parse(event.data);
+          const step = data.step;
+          const stepData = data.data;
+
+          if (step === 1) {
+            // Step 1完成
+            const incidentCount = stepData.incidents?.length || 0;
+
+            setScenarioState(prev => ({
+              ...prev,
+              currentStep: 1,
+              step1Status: 'completed',
+              step1Data: stepData,
+              incidentIds: stepData.incidents?.map((i: any) => i.uuId) || [],
+            }));
+
+            // 如果没有事件，立即完成步骤2和步骤3，以便显示步骤4
+            if (incidentCount === 0) {
+              setTimeout(() => {
+                setScenarioState(prev => ({
+                  ...prev,
+                  currentStep: 3,
+                  step2Status: 'completed',
+                  step2Data: { incident_details: [] },
+                  step3Status: 'completed',
+                  step3Data: {
+                    ips_to_block: [],
+                    ip_details: [],
+                    ai_summary: '今日暂无未处置的严重、高危事件，无需处置'
+                  },
+                  ipsToBlock: []
+                }));
+              }, 500);
+            }
+          } else if (step === 2) {
+            // Step 2完成
+            setScenarioState(prev => ({
+              ...prev,
+              currentStep: 2,
+              step2Status: 'completed',
+              step2Data: stepData,
+            }));
+          } else if (step === 3) {
+            // Step 3完成
+            setScenarioState(prev => ({
+              ...prev,
+              currentStep: 3,
+              step3Status: 'completed',
+              step3Data: stepData,
+              ipsToBlock: stepData.ips_to_block || [],
+            }));
+          }
+        } catch (error) {
+          console.error('Error parsing step_complete event:', error);
+        }
+      });
+
+      // 7. 监听complete事件
+      eventSource.addEventListener('complete', (event: any) => {
+        try {
+          const data = JSON.parse(event.data);
+          eventSource.close();
+          setLoading(false);
+
+          // 添加完成消息
+          const tempMessage: Message = {
+            id: (Date.now() + 1).toString(),
+            role: 'assistant',
+            content: '场景分析完成，请确认执行操作',
+            timestamp: new Date(),
+          };
+          setMessages((prev) => [...prev, tempMessage]);
+        } catch (error) {
+          console.error('Error parsing complete event:', error);
+        }
+      });
+
+      // 8. 监听error事件
+      eventSource.addEventListener('error', (event: any) => {
+        eventSource.close();
+        setLoading(false);
+
+        const errorMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: `❌ 场景执行失败：${event.data?.error || '未知错误'}`,
+          timestamp: new Date(),
+        };
+        setMessages((prev) => [...prev, errorMessage]);
+
+        setScenarioState(prev => ({
+          ...prev,
+          step1Status: 'error',
+          error: '场景执行失败',
+        }));
+      });
+
+      // 9. 保存eventSource引用以便清理
+      (window as any).scenarioEventSource = eventSource;
+
+    } catch (error: any) {
+      setLoading(false);
+      const errorMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: `❌ 场景启动失败：${error.message}`,
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+    }
+  };
+
+  // 处理场景确认
+  const handleScenarioConfirm = async () => {
+    // 如果没有事件，直接关闭对话框并显示提示消息
+    if (!scenarioState.incidentIds || scenarioState.incidentIds.length === 0) {
+      setScenarioState({
+        open: false,
+        scenarioId: null,
+        currentStep: 0,
+        step1Status: 'idle',
+        step2Status: 'idle',
+        step3Status: 'idle',
+        step1Data: null,
+        step2Data: null,
+        step3Data: null,
+        incidentId: null,
+        incidentIds: [],
+        ipsToBlock: [],
+        error: null,
+      });
+
+      const infoMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: '✅ 今日暂无未处置的严重、高危事件，无需执行处置操作',
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, infoMessage]);
+      return;
+    }
+
+    setConfirmingScenario(true);
+
+    try {
+      const fluxAuthCode = localStorage.getItem('flux_auth_code');
+      const fluxBaseUrl = localStorage.getItem('flux_base_url');
+
+      if (!fluxAuthCode || !fluxBaseUrl) {
+        throw new Error('缺少 Flux 认证信息');
+      }
+
+      // 构造确认消息
+      const confirmMessage = `确认执行场景处置：事件ID ${scenarioState.incidentIds.join(', ')}，封禁IP ${scenarioState.ipsToBlock.join(', ')}`;
+
+      const userMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        role: 'user',
+        content: confirmMessage,
+        timestamp: new Date(),
+      };
+
+      setMessages((prev) => [...prev, userMessage]);
+
+      const llmConfigStr = localStorage.getItem('llmConfig');
+      if (!llmConfigStr) {
+        throw new Error('请先在设置页面配置大模型API');
+      }
+
+      const llmConfig = JSON.parse(llmConfigStr);
+
+      const response = await fetch('http://localhost:8000/api/v1/llm/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messages: [...messages, userMessage].map(m => ({
+            role: m.role,
+            content: m.content,
+          })),
+          provider: llmConfig.provider,
+          api_key: llmConfig.apiKey,
+          base_url: llmConfig.baseUrl,
+          auth_code: fluxAuthCode,
+          flux_base_url: fluxBaseUrl,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('API请求失败');
+      }
+
+      const data = await response.json();
+
+      // 关闭场景对话框
+      setScenarioState({
+        open: false,
+        scenarioId: null,
+        currentStep: 0,
+        step1Status: 'idle',
+        step2Status: 'idle',
+        step3Status: 'idle',
+        step1Data: null,
+        step2Data: null,
+        step3Data: null,
+        incidentId: null,
+        incidentIds: [],
+        ipsToBlock: [],
+        error: null,
+      });
+
+      // 添加结果消息
+      const resultMessage: Message = {
+        id: (Date.now() + 2).toString(),
+        role: 'assistant',
+        content: data.message || '场景执行完成',
+        timestamp: new Date(),
+        type: data.type || 'text',
+        data: data.scenario_result,
+      };
+
+      setMessages((prev) => [...prev, resultMessage]);
+
+    } catch (error: any) {
+      const errorMessage: Message = {
+        id: (Date.now() + 2).toString(),
+        role: 'assistant',
+        content: `❌ 场景执行失败：${error.message}`,
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+
+      // 关闭场景对话框
+      setScenarioState(prev => ({ ...prev, open: false }));
+    } finally {
+      setConfirmingScenario(false);
+    }
+  };
+
+  // 处理场景取消
+  const handleScenarioCancel = () => {
+    setScenarioState({
+      open: false,
+      scenarioId: null,
+      currentStep: 0,
+      step1Status: 'idle',
+      step2Status: 'idle',
+      step3Status: 'idle',
+      step1Data: null,
+      step2Data: null,
+      step3Data: null,
+      incidentId: null,
+      incidentIds: [],
+      ipsToBlock: [],
+      error: null,
+    });
+
+    // 添加取消消息
+    const cancelMessage: Message = {
+      id: (Date.now() + 1).toString(),
+      role: 'assistant',
+      content: '已取消场景任务。',
+      timestamp: new Date(),
+    };
+
+    setMessages((prev) => [...prev, cancelMessage]);
+  };
+
+  // Toggle view mode function
+  const toggleViewMode = () => {
+    setViewMode((prev) => (prev === 'chat' ? 'cockpit' : 'chat'));
+  };
+
+  // Render cockpit mode
+  if (viewMode === 'cockpit') {
+    return (
+      <>
+        <SecurityCockpit
+          onScenarioStart={handleScenarioStart}
+          onModeChange={toggleViewMode}
+        />
+        <ModeToggleButton currentMode={viewMode} onToggle={toggleViewMode} />
+
+        {/* 场景任务进度对话框 */}
+        <ScenarioProgressDialog
+          open={scenarioState.open}
+          state={scenarioState}
+          onConfirm={handleScenarioConfirm}
+          onCancel={handleScenarioCancel}
+          confirming={confirmingScenario}
+        />
+      </>
+    );
+  }
+
   return (
     <Box
       sx={{
@@ -538,6 +1043,56 @@ export const ChatInterface = () => {
                         entities={(message.data as IncidentEntitiesData).item || []}
                         incidentId={message.content}
                       />
+                    ) : message.type === 'log_count' && message.data ? (
+                      <LogCountTable data={message.data as LogCountData} />
+                    ) : message.type === 'scenario_completed' && message.data ? (
+                      <Box sx={{ width: '100%' }}>
+                        <Alert
+                          severity={
+                            (message.data as any).partial_success ? 'warning' :
+                            (message.data as any).ip_block?.success === (message.data as any).ip_block?.total ? 'success' : 'error'
+                          }
+                          sx={{ mb: 2 }}
+                        >
+                          <Typography variant="body2" sx={{ whiteSpace: 'pre-line' }}>
+                            {message.content}
+                          </Typography>
+                        </Alert>
+
+                        <Divider sx={{ my: 2 }} />
+
+                        <Typography variant="subtitle2" gutterBottom>
+                          执行结果：
+                        </Typography>
+                        <List dense>
+                          {(message.data as any).ip_block?.total > 0 && (
+                            <ListItem>
+                              {(message.data as any).ip_block?.success === (message.data as any).ip_block?.total ? (
+                                <CheckCircle color="success" sx={{ mr: 1 }} />
+                              ) : (
+                                <Error color="error" sx={{ mr: 1 }} />
+                              )}
+                              <ListItemText
+                                primary={`IP封禁: ${(message.data as any).ip_block?.success}/${(message.data as any).ip_block?.total} 成功`}
+                                secondary={(message.data as any).ip_block?.details?.map((d: any) =>
+                                  `${d.ip}: ${d.success ? '✓' : '✗'}${d.error ? ` (${d.error})` : ''}`
+                                ).join(' | ')}
+                              />
+                            </ListItem>
+                          )}
+                          <ListItem>
+                            {(message.data as any).incident_update?.success ? (
+                              <CheckCircle color="success" sx={{ mr: 1 }} />
+                            ) : (
+                              <Error color="error" sx={{ mr: 1 }} />
+                            )}
+                            <ListItemText
+                              primary={`事件处置: ${(message.data as any).incident_update?.success ? '成功' : '失败'}`}
+                              secondary={(message.data as any).incident_update?.message}
+                            />
+                          </ListItem>
+                        </List>
+                      </Box>
                     ) : (
                       <Typography variant="body2" sx={{ lineHeight: 1.6 }}>
                         {message.content}
@@ -621,7 +1176,9 @@ export const ChatInterface = () => {
             </Button>
 
             {/* Skills Panel */}
-            <SkillsPanel onPromptSelect={setInput} />
+            <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+              <SkillsPanel onPromptSelect={setInput} />
+            </Box>
 
             <TextField
               fullWidth
@@ -677,6 +1234,19 @@ export const ChatInterface = () => {
         loading={confirmingIPBlock}
         error={ipBlockError}
       />
+
+      {/* 场景任务进度对话框 */}
+      <ScenarioProgressDialog
+        open={scenarioState.open}
+        state={scenarioState}
+        onConfirm={handleScenarioConfirm}
+        onCancel={handleScenarioCancel}
+        confirming={confirmingScenario}
+      />
+
+      {/* 场景启动确认对话框 */}
+      {/* Mode Toggle Button - Only show in chat mode */}
+      <ModeToggleButton currentMode={viewMode} onToggle={toggleViewMode} />
     </Box>
   );
 };

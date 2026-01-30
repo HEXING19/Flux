@@ -1,6 +1,8 @@
-from typing import Optional, List
-from fastapi import APIRouter, HTTPException
+from typing import Optional, List, AsyncGenerator
+from fastapi import APIRouter, HTTPException, Header
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+import json
 from ....services.llm_service import LLMService
 
 
@@ -38,7 +40,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     success: bool
     message: str
-    type: Optional[str] = "text"  # "text" | "asset_confirmation" | "ipblock_confirmation" | "ipblock_status" | "incidents_list" | "incident_proof" | "incident_entities" | "incident_status_updated"
+    type: Optional[str] = "text"  # "text" | "asset_confirmation" | "ipblock_confirmation" | "ipblock_status" | "incidents_list" | "incident_proof" | "incident_entities" | "incident_status_updated" | "scenario_start" | "scenario_completed"
     asset_params: Optional[dict] = None  # 资产参数（用于确认对话框）
     block_params: Optional[dict] = None  # IP封禁参数（用于确认对话框）
     status: Optional[dict] = None  # IP封禁状态
@@ -46,6 +48,8 @@ class ChatResponse(BaseModel):
     proof_data: Optional[dict] = None  # 事件举证数据
     entities_data: Optional[dict] = None  # IP实体数据
     update_result: Optional[dict] = None  # 更新结果数据
+    scenario_data: Optional[dict] = None  # 场景启动数据（步骤1-3的结果）
+    scenario_result: Optional[dict] = None  # 场景执行结果（步骤4的结果）
 
 
 @router.post("/test", response_model=LLMTestResponse)
@@ -191,3 +195,74 @@ async def get_supported_providers():
     return {
         "providers": providers
     }
+
+
+@router.get("/scenario/stream")
+async def execute_scenario_stream(
+    provider: Optional[str] = None,
+    api_key: Optional[str] = None,
+    llm_base_url: Optional[str] = None,
+    auth_code: Optional[str] = None,
+    flux_base_url: Optional[str] = None
+):
+    """
+    SSE流式返回场景执行进度（GET请求）
+
+    每个步骤完成后立即推送数据给前端
+
+    Args:
+        provider: LLM provider (query parameter)
+        api_key: LLM API key (query parameter)
+        llm_base_url: LLM base URL (query parameter)
+        auth_code: Flux authentication code (query parameter)
+        flux_base_url: Flux API base URL (query parameter)
+
+    Returns:
+        Server-Sent Events stream
+    """
+    async def event_generator() -> AsyncGenerator[str, None]:
+        from ....services.scenario_orchestration_service import ScenarioOrchestrationService
+        service = ScenarioOrchestrationService()
+
+        try:
+            # Step 1: 查询今日高危事件
+            step1_result = await service._step1_query_incidents(
+                auth_code=auth_code,
+                base_url=flux_base_url
+            )
+            yield f"event: step_complete\ndata: {json.dumps({'step': 1, 'data': step1_result})}\n\n"
+
+            # Step 2: 分析Top 10事件
+            incidents = step1_result.get("incidents", [])
+            step2_result = await service._step2_analyze_top_incidents(
+                auth_code=auth_code,
+                base_url=flux_base_url,
+                incidents=incidents[:10],
+                provider=provider,
+                api_key=api_key,
+                llm_base_url=llm_base_url
+            )
+            yield f"event: step_complete\ndata: {json.dumps({'step': 2, 'data': step2_result})}\n\n"
+
+            # Step 3: 准备确认信息
+            step3_result = service._step3_prepare_confirmation_for_top_incidents(
+                step2_result=step2_result,
+                incidents=incidents
+            )
+            yield f"event: step_complete\ndata: {json.dumps({'step': 3, 'data': step3_result})}\n\n"
+
+            # 完成
+            yield f"event: complete\ndata: {json.dumps({'success': True})}\n\n"
+
+        except Exception as e:
+            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"  # 禁用nginx缓冲
+        }
+    )
