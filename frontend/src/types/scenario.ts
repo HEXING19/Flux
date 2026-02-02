@@ -30,24 +30,24 @@ export interface ScenarioState {
   executionStatus: 'idle' | 'executing' | 'success' | 'partial_success' | 'error';
   executionResult: {
     partial_success?: boolean;
-    results: {
-      ip_block: {
+    // 注意：后端直接返回 ip_block 和 incident_updates，没有 results 嵌套层
+    ip_block: {
+      total: number;
+      success: number;
+      failed: number;
+      details: Array<{ ip: string; success: boolean; error?: string }>;
+    };
+    incident_updates: {
+      total: number;
+      success: number;
+      failed: number;
+      details: Array<{
+        success: boolean;
         total: number;
-        success: number;
-        details: Array<{ ip: string; success: boolean; error?: string }>;
-      };
-      incident_updates: {  // 注意：后端返回的字段名是 incident_updates（带s）
-        total: number;
-        success: number;
-        failed: number;
-        details: Array<{
-          success: boolean;
-          total: number;
-          succeededNum: number;
-          failedNum: number;
-          message?: string;
-        }>;
-      };
+        succeededNum: number;
+        failedNum: number;
+        message?: string;
+      }>;
     };
   } | null;
   executionError: string | null;

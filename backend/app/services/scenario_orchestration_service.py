@@ -166,6 +166,10 @@ class ScenarioOrchestrationService:
                 )
                 update_results.append(result)
 
+            # 统计事件更新成功/失败
+            update_success_count = sum(1 for r in update_results if r.get("success", False))
+            update_failed_count = sum(1 for r in update_results if not r.get("success", False))
+
             return {
                 "success": all(r.get("success", False) for r in update_results),
                 "completed": True,
@@ -178,7 +182,12 @@ class ScenarioOrchestrationService:
                         "failed": 0,
                         "details": []
                     },
-                    "incident_updates": update_results
+                    "incident_updates": {
+                        "total": len(update_results),
+                        "success": update_success_count,
+                        "failed": update_failed_count,
+                        "details": update_results
+                    }
                 }
             }
 

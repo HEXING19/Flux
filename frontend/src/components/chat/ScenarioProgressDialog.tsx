@@ -402,12 +402,6 @@ export const ScenarioProgressDialog: React.FC<ScenarioProgressDialogProps> = ({
             {/* 执行完成：显示结果 */}
             {isCompleted && state.executionResult && (
               <Box sx={{ mt: 2 }}>
-                {/* 调试日志 */}
-                {console.log('🐛 Debug - executionResult:', state.executionResult)}
-                {console.log('🐛 Debug - executionResult.results:', state.executionResult.results)}
-                {console.log('🐛 Debug - ip_block:', state.executionResult.results?.ip_block)}
-                {console.log('🐛 Debug - incident_updates:', state.executionResult.results?.incident_updates)}
-
                 {/* 整体状态Alert */}
                 <Alert
                   severity={
@@ -436,7 +430,7 @@ export const ScenarioProgressDialog: React.FC<ScenarioProgressDialogProps> = ({
                 </Typography>
                 <List dense>
                   {/* IP封禁结果 */}
-                  {state.executionResult.results?.ip_block && (
+                  {state.executionResult.ip_block && (
                     <ListItem
                       divider
                       sx={{
@@ -448,18 +442,18 @@ export const ScenarioProgressDialog: React.FC<ScenarioProgressDialogProps> = ({
                       }}
                     >
                       <Box sx={{ display: 'flex', alignItems: 'center', width: '100%', mb: 1 }}>
-                        {state.executionResult.results.ip_block.success === state.executionResult.results.ip_block.total ? (
+                        {state.executionResult.ip_block.success === state.executionResult.ip_block.total ? (
                           <CheckCircle color="success" sx={{ mr: 1 }} />
                         ) : (
                           <Error color="error" sx={{ mr: 1 }} />
                         )}
                         <Typography variant="subtitle2">
-                          IP封禁: {state.executionResult.results.ip_block.success}/{state.executionResult.results.ip_block.total} 成功
+                          IP封禁: {state.executionResult.ip_block.success}/{state.executionResult.ip_block.total} 成功
                         </Typography>
                       </Box>
 
                       {/* 显示每个IP的封禁结果 */}
-                      {state.executionResult.results.ip_block.details.map((detail, idx) => (
+                      {state.executionResult.ip_block.details && state.executionResult.ip_block.details.map((detail, idx) => (
                         <Box key={idx} sx={{ pl: 4, py: 0.5, width: '100%' }}>
                           <Typography variant="body2" color="text.secondary">
                             {detail.ip}: {detail.success ? '✓ 成功' : '✗ 失败'}
@@ -475,7 +469,7 @@ export const ScenarioProgressDialog: React.FC<ScenarioProgressDialogProps> = ({
                   )}
 
                   {/* 事件处置结果 */}
-                  {state.executionResult.results?.incident_updates && (
+                  {state.executionResult.incident_updates && (
                     <ListItem
                       sx={{
                         bgcolor: 'background.paper',
@@ -485,24 +479,24 @@ export const ScenarioProgressDialog: React.FC<ScenarioProgressDialogProps> = ({
                       }}
                     >
                       <Box sx={{ display: 'flex', alignItems: 'center', width: '100%', mb: 1 }}>
-                        {state.executionResult.results.incident_updates.failed === 0 ? (
+                        {state.executionResult.incident_updates.failed === 0 ? (
                           <CheckCircle color="success" sx={{ mr: 1 }} />
                         ) : (
                           <Error color="error" sx={{ mr: 1 }} />
                         )}
                         <Typography variant="subtitle2">
-                          事件处置: {state.executionResult.results.incident_updates.failed === 0 ? '成功' : '部分失败'}
+                          事件处置: {state.executionResult.incident_updates.failed === 0 ? '成功' : '部分失败'}
                         </Typography>
                       </Box>
 
                       <Typography variant="body2" color="text.secondary" sx={{ pl: 4 }}>
-                        总计: {state.executionResult.results.incident_updates.total} 条 |
-                        成功: {state.executionResult.results.incident_updates.success} 条 |
-                        失败: {state.executionResult.results.incident_updates.failed} 条
+                        总计: {state.executionResult.incident_updates.total} 条 |
+                        成功: {state.executionResult.incident_updates.success} 条 |
+                        失败: {state.executionResult.incident_updates.failed} 条
                       </Typography>
 
                       {/* 显示每个事件的更新结果 */}
-                      {state.executionResult.results.incident_updates.details.map((detail, idx) => (
+                      {state.executionResult.incident_updates.details && state.executionResult.incident_updates.details.map((detail, idx) => (
                         <Box key={idx} sx={{ pl: 4, py: 0.5, width: '100%' }}>
                           <Typography variant="body2" color="text.secondary">
                             事件 {idx + 1}: {detail.success ? '✓ 成功' : '✗ 失败'}
