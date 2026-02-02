@@ -26,6 +26,9 @@ import {
 import {
   ExpandMore as ExpandMoreIcon,
   ChevronRight as ChevronRightIcon,
+  CheckCircle,
+  Error,
+  Warning,
 } from '@mui/icons-material';
 import type { ScenarioState } from '../../types/scenario';
 import {
@@ -37,6 +40,7 @@ interface ScenarioProgressDialogProps {
   state: ScenarioState;
   onConfirm: () => void;
   onCancel: () => void;
+  onClose?: () => void;  // 新增：关闭按钮回调
   confirming?: boolean;
 }
 
@@ -45,6 +49,7 @@ export const ScenarioProgressDialog: React.FC<ScenarioProgressDialogProps> = ({
   state,
   onConfirm,
   onCancel,
+  onClose,
   confirming = false,
 }) => {
   // 添加调试日志
@@ -321,60 +326,204 @@ export const ScenarioProgressDialog: React.FC<ScenarioProgressDialogProps> = ({
     </Step>
   );
 
-  const renderStep4 = () => (
-    <Step expanded={expandedSteps[3]}>
-      <StepLabel
-        onClick={() => state.step3Status === 'completed' && toggleStep(3)}
-        sx={{ cursor: state.step3Status === 'completed' ? 'pointer' : 'default' }}
-      >
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          确认并执行处置
-          {state.step3Status === 'completed' && (
-            <IconButton size="small" onClick={(e) => { e.stopPropagation(); toggleStep(3); }}>
-              {expandedSteps[3] ? <ExpandMoreIcon /> : <ChevronRightIcon />}
-            </IconButton>
-          )}
-        </Box>
-      </StepLabel>
-      <StepContent>
-        <Collapse in={expandedSteps[3]} timeout="auto" unmountOnExit>
-          {state.step3Status === 'completed' && state.step3Data && (
-            <Box sx={{ mt: 1 }}>
-              <Alert severity="warning" sx={{ mb: 2 }}>
-                <Typography variant="body2">
-                  {state.step3Data.ai_summary}
-                </Typography>
-              </Alert>
+  const renderStep4 = () => {
+    const isExecuting = state.executionStatus === 'executing';
+    const isCompleted = ['success', 'partial_success', 'error'].includes(state.executionStatus);
 
-              <Typography variant="subtitle2" gutterBottom>
-                将要执行的操作：
-              </Typography>
-              <List dense>
-                {state.ipsToBlock.length > 0 && (
+    return (
+      <Step expanded={expandedSteps[3]} completed={isCompleted}>
+        <StepLabel
+          onClick={() => state.step3Status === 'completed' && toggleStep(3)}
+          sx={{ cursor: state.step3Status === 'completed' ? 'pointer' : 'default' }}
+        >
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            确认并执行处置
+            {state.step3Status === 'completed' && (
+              <IconButton size="small" onClick={(e) => { e.stopPropagation(); toggleStep(3); }}>
+                {expandedSteps[3] ? <ExpandMoreIcon /> : <ChevronRightIcon />}
+              </IconButton>
+            )}
+          </Box>
+        </StepLabel>
+        <StepContent>
+          <Collapse in={expandedSteps[3]} timeout="auto" unmountOnExit>
+            {/* 执行前：显示将要执行的操作 */}
+            {state.step3Status === 'completed' && state.executionStatus === 'idle' && state.step3Data && (
+              <Box sx={{ mt: 1 }}>
+                <Alert severity="warning" sx={{ mb: 2 }}>
+                  <Typography variant="body2">
+                    {state.step3Data.ai_summary}
+                  </Typography>
+                </Alert>
+
+                <Typography variant="subtitle2" gutterBottom>
+                  将要执行的操作：
+                </Typography>
+                <List dense>
+                  {state.ipsToBlock.length > 0 && (
+                    <ListItem>
+                      <ListItemText
+                        primary="IP封禁"
+                        secondary={`IP: ${state.ipsToBlock.join(', ')} | 设备: 物联网安全网关 | 时长: 7天`}
+                      />
+                    </ListItem>
+                  )}
                   <ListItem>
                     <ListItemText
-                      primary="IP封禁"
-                      secondary={`IP: ${state.ipsToBlock.join(', ')} | 设备: 物联网安全网关 | 时长: 7天`}
+                      primary="事件处置"
+                      secondary={
+                        state.ipsToBlock.length > 0
+                          ? "状态: 已处置 | 备注: AI自动化闭环 - IP已封禁"
+                          : "状态: 已处置 | 备注: AI自动化闭环"
+                      }
                     />
                   </ListItem>
-                )}
-                <ListItem>
-                  <ListItemText
-                    primary="事件处置"
-                    secondary={
-                      state.ipsToBlock.length > 0
-                        ? "状态: 已处置 | 备注: AI自动化闭环 - IP已封禁"
-                        : "状态: 已处置 | 备注: AI自动化闭环"
-                    }
-                  />
-                </ListItem>
-              </List>
-            </Box>
-          )}
-        </Collapse>
-      </StepContent>
-    </Step>
-  );
+                </List>
+              </Box>
+            )}
+
+            {/* 执行中：显示loading */}
+            {isExecuting && (
+              <Box sx={{ mt: 2, display: 'flex', alignItems: 'center', gap: 2 }}>
+                <CircularProgress size={24} />
+                <Box>
+                  <Typography variant="subtitle2" gutterBottom>
+                    正在执行处置操作...
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    {state.ipsToBlock.length > 0
+                      ? `正在封禁 ${state.ipsToBlock.length} 个IP并更新事件状态`
+                      : '正在更新事件状态'}
+                  </Typography>
+                </Box>
+              </Box>
+            )}
+
+            {/* 执行完成：显示结果 */}
+            {isCompleted && state.executionResult && (
+              <Box sx={{ mt: 2 }}>
+                {/* 调试日志 */}
+                {console.log('🐛 Debug - executionResult:', state.executionResult)}
+                {console.log('🐛 Debug - executionResult.results:', state.executionResult.results)}
+                {console.log('🐛 Debug - ip_block:', state.executionResult.results?.ip_block)}
+                {console.log('🐛 Debug - incident_updates:', state.executionResult.results?.incident_updates)}
+
+                {/* 整体状态Alert */}
+                <Alert
+                  severity={
+                    state.executionStatus === 'success' ? 'success' :
+                    state.executionStatus === 'partial_success' ? 'warning' : 'error'
+                  }
+                  sx={{ mb: 2 }}
+                >
+                  <Typography variant="subtitle2" gutterBottom>
+                    {state.executionStatus === 'success' ? '✅ 处置成功' :
+                     state.executionStatus === 'partial_success' ? '⚠️ 部分成功' :
+                     '❌ 执行失败'}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    {state.executionStatus === 'success'
+                      ? '所有操作均已成功完成'
+                      : state.executionStatus === 'partial_success'
+                      ? '部分操作成功完成，请查看详细信息'
+                      : state.executionError || '执行过程中发生错误'}
+                  </Typography>
+                </Alert>
+
+                {/* 详细结果列表 */}
+                <Typography variant="subtitle2" gutterBottom sx={{ mt: 2 }}>
+                  执行详情：
+                </Typography>
+                <List dense>
+                  {/* IP封禁结果 */}
+                  {state.executionResult.results?.ip_block && (
+                    <ListItem
+                      divider
+                      sx={{
+                        bgcolor: 'background.paper',
+                        borderRadius: 1,
+                        mb: 1,
+                        flexDirection: 'column',
+                        alignItems: 'flex-start'
+                      }}
+                    >
+                      <Box sx={{ display: 'flex', alignItems: 'center', width: '100%', mb: 1 }}>
+                        {state.executionResult.results.ip_block.success === state.executionResult.results.ip_block.total ? (
+                          <CheckCircle color="success" sx={{ mr: 1 }} />
+                        ) : (
+                          <Error color="error" sx={{ mr: 1 }} />
+                        )}
+                        <Typography variant="subtitle2">
+                          IP封禁: {state.executionResult.results.ip_block.success}/{state.executionResult.results.ip_block.total} 成功
+                        </Typography>
+                      </Box>
+
+                      {/* 显示每个IP的封禁结果 */}
+                      {state.executionResult.results.ip_block.details.map((detail, idx) => (
+                        <Box key={idx} sx={{ pl: 4, py: 0.5, width: '100%' }}>
+                          <Typography variant="body2" color="text.secondary">
+                            {detail.ip}: {detail.success ? '✓ 成功' : '✗ 失败'}
+                            {detail.error && (
+                              <Typography component="span" color="error">
+                                {' '}({detail.error})
+                              </Typography>
+                            )}
+                          </Typography>
+                        </Box>
+                      ))}
+                    </ListItem>
+                  )}
+
+                  {/* 事件处置结果 */}
+                  {state.executionResult.results?.incident_updates && (
+                    <ListItem
+                      sx={{
+                        bgcolor: 'background.paper',
+                        borderRadius: 1,
+                        flexDirection: 'column',
+                        alignItems: 'flex-start'
+                      }}
+                    >
+                      <Box sx={{ display: 'flex', alignItems: 'center', width: '100%', mb: 1 }}>
+                        {state.executionResult.results.incident_updates.failed === 0 ? (
+                          <CheckCircle color="success" sx={{ mr: 1 }} />
+                        ) : (
+                          <Error color="error" sx={{ mr: 1 }} />
+                        )}
+                        <Typography variant="subtitle2">
+                          事件处置: {state.executionResult.results.incident_updates.failed === 0 ? '成功' : '部分失败'}
+                        </Typography>
+                      </Box>
+
+                      <Typography variant="body2" color="text.secondary" sx={{ pl: 4 }}>
+                        总计: {state.executionResult.results.incident_updates.total} 条 |
+                        成功: {state.executionResult.results.incident_updates.success} 条 |
+                        失败: {state.executionResult.results.incident_updates.failed} 条
+                      </Typography>
+
+                      {/* 显示每个事件的更新结果 */}
+                      {state.executionResult.results.incident_updates.details.map((detail, idx) => (
+                        <Box key={idx} sx={{ pl: 4, py: 0.5, width: '100%' }}>
+                          <Typography variant="body2" color="text.secondary">
+                            事件 {idx + 1}: {detail.success ? '✓ 成功' : '✗ 失败'}
+                            {detail.message && (
+                              <Typography component="span" color="text.secondary">
+                                {' '}{detail.message}
+                              </Typography>
+                            )}
+                          </Typography>
+                        </Box>
+                      ))}
+                    </ListItem>
+                  )}
+                </List>
+              </Box>
+            )}
+          </Collapse>
+        </StepContent>
+      </Step>
+    );
+  };
 
   return (
     <Dialog
@@ -406,19 +555,46 @@ export const ScenarioProgressDialog: React.FC<ScenarioProgressDialogProps> = ({
       </DialogContent>
 
       <DialogActions sx={{ px: 3, pb: 2 }}>
-        <Button onClick={onCancel} color="inherit" disabled={confirming}>
-          取消
-        </Button>
-        <Button
-          onClick={onConfirm}
-          variant="contained"
-          color="primary"
-          disabled={state.currentStep !== 3 || confirming}
-        >
-          {confirming ? '执行中...' :
-           state.ipsToBlock.length > 0 ? '确认封禁并关闭事件' :
-           '调整事件处置状态'}
-        </Button>
+        {/* 执行前：显示 取消 和 确认 按钮 */}
+        {state.executionStatus === 'idle' && (
+          <>
+            <Button onClick={onCancel} color="inherit" disabled={confirming}>
+              取消
+            </Button>
+            <Button
+              onClick={onConfirm}
+              variant="contained"
+              color="primary"
+              disabled={state.currentStep !== 3 || confirming}
+            >
+              {confirming ? '执行中...' :
+               state.ipsToBlock.length > 0 ? '确认封禁并关闭事件' :
+               '调整事件处置状态'}
+            </Button>
+          </>
+        )}
+
+        {/* 执行中：禁用所有按钮 */}
+        {state.executionStatus === 'executing' && (
+          <Button disabled variant="contained">
+            执行中...
+          </Button>
+        )}
+
+        {/* 执行完成：显示 关闭 按钮 */}
+        {['success', 'partial_success', 'error'].includes(state.executionStatus) && (
+          <Button
+            onClick={onClose}
+            variant="contained"
+            color={state.executionStatus === 'success' ? 'success' : 'primary'}
+            startIcon={
+              state.executionStatus === 'success' ? <CheckCircle /> :
+              state.executionStatus === 'partial_success' ? <Warning /> : <Error />
+            }
+          >
+            关闭
+          </Button>
+        )}
       </DialogActions>
     </Dialog>
   );

@@ -25,6 +25,32 @@ export interface ScenarioState {
   incidentIds: string[];  // 新增，多个事件ID
   ipsToBlock: string[];
   error: string | null;
+
+  // 新增：执行结果相关字段
+  executionStatus: 'idle' | 'executing' | 'success' | 'partial_success' | 'error';
+  executionResult: {
+    partial_success?: boolean;
+    results: {
+      ip_block: {
+        total: number;
+        success: number;
+        details: Array<{ ip: string; success: boolean; error?: string }>;
+      };
+      incident_updates: {  // 注意：后端返回的字段名是 incident_updates（带s）
+        total: number;
+        success: number;
+        failed: number;
+        details: Array<{
+          success: boolean;
+          total: number;
+          succeededNum: number;
+          failedNum: number;
+          message?: string;
+        }>;
+      };
+    };
+  } | null;
+  executionError: string | null;
 }
 
 /**

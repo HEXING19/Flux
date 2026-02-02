@@ -100,6 +100,9 @@ export const ChatInterface = () => {
     incidentIds: [],
     ipsToBlock: [],
     error: null,
+    executionStatus: 'idle',
+    executionResult: null,
+    executionError: null,
   });
   const [confirmingScenario, setConfirmingScenario] = useState(false);
 
@@ -632,6 +635,9 @@ export const ChatInterface = () => {
       incidentIds: [],
       ipsToBlock: [],
       error: null,
+      executionStatus: 'idle' as const,
+      executionResult: null,
+      executionError: null,
     };
     console.log('Setting scenarioState to:', newState);
     setScenarioState(newState);
@@ -811,6 +817,9 @@ export const ChatInterface = () => {
         incidentIds: [],
         ipsToBlock: [],
         error: null,
+        executionStatus: 'idle',
+        executionResult: null,
+        executionError: null,
       });
 
       const infoMessage: Message = {
@@ -824,6 +833,14 @@ export const ChatInterface = () => {
     }
 
     setConfirmingScenario(true);
+
+    // 更新状态为执行中（弹窗保持打开）
+    setScenarioState(prev => ({
+      ...prev,
+      executionStatus: 'executing',
+      executionResult: null,
+      executionError: null,
+    }));
 
     try {
       const fluxAuthCode = localStorage.getItem('flux_auth_code');
@@ -876,24 +893,35 @@ export const ChatInterface = () => {
 
       const data = await response.json();
 
-      // 关闭场景对话框
-      setScenarioState({
-        open: false,
-        scenarioId: null,
-        currentStep: 0,
-        step1Status: 'idle',
-        step2Status: 'idle',
-        step3Status: 'idle',
-        step1Data: null,
-        step2Data: null,
-        step3Data: null,
-        incidentId: null,
-        incidentIds: [],
-        ipsToBlock: [],
-        error: null,
-      });
+      // 解析执行结果
+      let executionStatus: 'success' | 'partial_success' | 'error' = 'success';
+      const resultData = data.scenario_result;
 
-      // 添加结果消息
+      if (resultData) {
+        // 判断执行状态
+        const ipBlockSuccess = resultData.ip_block?.success === resultData.ip_block?.total;
+        // 注意：后端返回的字段是 incident_updates（带s）
+        const incidentUpdatesSuccess = resultData.incident_updates?.failed === 0;
+
+        if (!ipBlockSuccess || !incidentUpdatesSuccess) {
+          executionStatus = ipBlockSuccess || incidentUpdatesSuccess ? 'partial_success' : 'error';
+        }
+
+        // 如果后端明确标记为部分成功，使用后端的判断
+        if (resultData.partial_success) {
+          executionStatus = 'partial_success';
+        }
+      }
+
+      // 更新弹窗状态，显示执行结果（弹窗保持打开）
+      setScenarioState(prev => ({
+        ...prev,
+        executionStatus,
+        executionResult: resultData || null,
+        executionError: null,
+      }));
+
+      // 同时在聊天界面添加结果摘要消息
       const resultMessage: Message = {
         id: (Date.now() + 2).toString(),
         role: 'assistant',
@@ -906,6 +934,15 @@ export const ChatInterface = () => {
       setMessages((prev) => [...prev, resultMessage]);
 
     } catch (error: any) {
+      // 更新弹窗状态为错误
+      setScenarioState(prev => ({
+        ...prev,
+        executionStatus: 'error',
+        executionResult: null,
+        executionError: error.message,
+      }));
+
+      // 在聊天界面添加错误消息
       const errorMessage: Message = {
         id: (Date.now() + 2).toString(),
         role: 'assistant',
@@ -913,12 +950,31 @@ export const ChatInterface = () => {
         timestamp: new Date(),
       };
       setMessages((prev) => [...prev, errorMessage]);
-
-      // 关闭场景对话框
-      setScenarioState(prev => ({ ...prev, open: false }));
     } finally {
       setConfirmingScenario(false);
     }
+  };
+
+  // 处理关闭弹窗（用户主动点击"关闭"按钮）
+  const handleCloseDialog = () => {
+    setScenarioState({
+      open: false,
+      scenarioId: null,
+      currentStep: 0,
+      step1Status: 'idle',
+      step2Status: 'idle',
+      step3Status: 'idle',
+      step1Data: null,
+      step2Data: null,
+      step3Data: null,
+      incidentId: null,
+      incidentIds: [],
+      ipsToBlock: [],
+      error: null,
+      executionStatus: 'idle',
+      executionResult: null,
+      executionError: null,
+    });
   };
 
   // 处理场景取消
@@ -937,6 +993,9 @@ export const ChatInterface = () => {
       incidentIds: [],
       ipsToBlock: [],
       error: null,
+      executionStatus: 'idle',
+      executionResult: null,
+      executionError: null,
     });
 
     // 添加取消消息
@@ -971,6 +1030,7 @@ export const ChatInterface = () => {
           state={scenarioState}
           onConfirm={handleScenarioConfirm}
           onCancel={handleScenarioCancel}
+          onClose={handleCloseDialog}
           confirming={confirmingScenario}
         />
       </>
@@ -1241,6 +1301,7 @@ export const ChatInterface = () => {
         state={scenarioState}
         onConfirm={handleScenarioConfirm}
         onCancel={handleScenarioCancel}
+        onClose={handleCloseDialog}
         confirming={confirmingScenario}
       />
 
