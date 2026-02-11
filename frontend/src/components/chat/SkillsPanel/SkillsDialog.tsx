@@ -53,13 +53,14 @@ export const SkillsDialog: React.FC<SkillsDialogProps> = ({
   });
 
   // Sort skills by order
-  const sortedSkills = filteredSkills.sort((a, b) => a.order - b.order);
+  const sortedSkills = [...filteredSkills].sort((a, b) => a.order - b.order);
 
   const categories: Array<{ value: SkillFilterType; label: string }> = [
     { value: 'all', label: CATEGORY_NAMES.all },
     { value: 'incident', label: CATEGORY_NAMES.incident },
     { value: 'asset', label: CATEGORY_NAMES.asset },
     { value: 'network', label: CATEGORY_NAMES.network },
+    { value: 'general', label: CATEGORY_NAMES.general },
   ];
 
   return (

@@ -30,17 +30,27 @@ const getSeverityInfo = (severity: number) => {
   return severityMap[severity] || { label: '未知', color: 'default', icon: '⚪' };
 };
 
-const getDealStatusInfo = (status: number) => {
+const getDealStatusInfo = (
+  status: number,
+  dealAction?: string
+): { label: string; color: 'default' | 'info' | 'success' | 'warning' } => {
   const statusMap: Record<number, { label: string; color: 'default' | 'info' | 'success' | 'warning' }> = {
     0: { label: '待处置', color: 'default' },
     10: { label: '处置中', color: 'info' },
-    30: { label: '已防护', color: 'success' },
+    30: { label: '已遏制', color: 'success' },
     40: { label: '已处置', color: 'success' },
     50: { label: '已挂起', color: 'default' },
     60: { label: '接受风险', color: 'warning' },
+    // Backward compatibility for historical data
     70: { label: '已遏制', color: 'success' },
   };
-  return statusMap[status] || { label: '未知', color: 'default' };
+  if (statusMap[status]) {
+    return statusMap[status];
+  }
+  if (dealAction) {
+    return { label: dealAction, color: 'default' };
+  }
+  return { label: `未知(${status})`, color: 'default' };
 };
 
 const getStageInfo = (stage: number) => {
@@ -133,6 +143,7 @@ const AlertCard: React.FC<AlertCardProps> = ({ alert, index }) => {
 };
 
 export const IncidentProofTable: React.FC<IncidentProofTableProps> = ({ data }) => {
+  const dealStatusInfo = getDealStatusInfo(data.dealStatus ?? -1, data.dealAction);
   const severityInfo = getSeverityInfo(data.severity);
 
   return (
@@ -209,8 +220,8 @@ export const IncidentProofTable: React.FC<IncidentProofTableProps> = ({ data }) 
               <TableCell sx={{ fontWeight: 600 }}>处置状态</TableCell>
               <TableCell>
                 <Chip
-                  label={getDealStatusInfo(data.dealStatus ?? 0).label}
-                  color={getDealStatusInfo(data.dealStatus ?? 0).color}
+                  label={dealStatusInfo.label}
+                  color={dealStatusInfo.color}
                   size="small"
                   variant="outlined"
                 />

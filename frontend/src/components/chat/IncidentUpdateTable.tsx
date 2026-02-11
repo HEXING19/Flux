@@ -17,13 +17,14 @@ const getDealStatusInfo = (status: number) => {
   const statusMap: Record<number, { label: string; color: 'default' | 'info' | 'success' | 'warning' | 'error' }> = {
     0: { label: '待处置', color: 'default' },
     10: { label: '处置中', color: 'info' },
-    30: { label: '已防护', color: 'success' },
+    30: { label: '已遏制', color: 'success' },
     40: { label: '已处置', color: 'success' },
     50: { label: '已挂起', color: 'default' },
     60: { label: '接受风险', color: 'warning' },
+    // Backward compatibility for historical data
     70: { label: '已遏制', color: 'success' },
   };
-  return statusMap[status] || { label: '未知', color: 'default' };
+  return statusMap[status] || { label: `未知(${status})`, color: 'default' };
 };
 
 export const IncidentUpdateTable: React.FC<IncidentUpdateTableProps> = ({ data }) => {
@@ -34,7 +35,7 @@ export const IncidentUpdateTable: React.FC<IncidentUpdateTableProps> = ({ data }
       {/* Header */}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
         <CheckCircleIcon
-          color={data.succeededNum > 0 ? 'success' : data.failedNum > 0 ? 'error' : 'default'}
+          color={data.succeededNum > 0 ? 'success' : data.failedNum > 0 ? 'error' : 'disabled'}
           fontSize="small"
         />
         <Typography variant="subtitle2" color="text.primary" fontWeight={600}>

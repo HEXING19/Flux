@@ -4,6 +4,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import json
 from ....services.llm_service import LLMService
+from ....services.skills_registry import get_skills_metadata
 
 
 router = APIRouter()
@@ -44,12 +45,18 @@ class ChatResponse(BaseModel):
     asset_params: Optional[dict] = None  # 资产参数（用于确认对话框）
     block_params: Optional[dict] = None  # IP封禁参数（用于确认对话框）
     status: Optional[dict] = None  # IP封禁状态
+    ipblock_summary_data: Optional[dict] = None  # IP封禁摘要（直接执行封禁时返回）
     incidents_data: Optional[dict] = None  # 事件列表数据
     proof_data: Optional[dict] = None  # 事件举证数据
     entities_data: Optional[dict] = None  # IP实体数据
     update_result: Optional[dict] = None  # 更新结果数据
+    log_count_data: Optional[dict] = None  # 日志统计数据
     scenario_data: Optional[dict] = None  # 场景启动数据（步骤1-3的结果）
     scenario_result: Optional[dict] = None  # 场景执行结果（步骤4的结果）
+
+
+class SkillsResponse(BaseModel):
+    skills: List[dict]
 
 
 @router.post("/test", response_model=LLMTestResponse)
@@ -195,6 +202,14 @@ async def get_supported_providers():
     return {
         "providers": providers
     }
+
+
+@router.get("/skills", response_model=SkillsResponse)
+async def get_supported_skills():
+    """
+    获取当前支持的技能元数据（用于前端 Skills 面板）
+    """
+    return SkillsResponse(skills=get_skills_metadata())
 
 
 @router.get("/scenario/stream")

@@ -15,7 +15,7 @@ import WarningIcon from '@mui/icons-material/Warning';
 import type { IncidentsListTableProps } from '../../types/incidents';
 
 const getSeverityInfo = (severity: number) => {
-  const severityMap = {
+  const severityMap: Record<number, { label: string; color: 'default' | 'info' | 'success' | 'warning' | 'error'; icon: string }> = {
     0: { label: '信息', color: 'info' as const, icon: '🔵' },
     1: { label: '低危', color: 'success' as const, icon: '🟢' },
     2: { label: '中危', color: 'warning' as const, icon: '🟡' },
@@ -25,17 +25,24 @@ const getSeverityInfo = (severity: number) => {
   return severityMap[severity] || { label: '未知', color: 'default' as const, icon: '⚪' };
 };
 
-const getDealStatusInfo = (status: number) => {
-  const statusMap = {
+const getDealStatusInfo = (status: number, dealAction?: string): { label: string; color: 'default' | 'info' | 'success' | 'warning' } => {
+  const statusMap: Record<number, { label: string; color: 'default' | 'info' | 'success' | 'warning' }> = {
     0: { label: '待处置', color: 'default' as const },
     10: { label: '处置中', color: 'info' as const },
-    30: { label: '已防护', color: 'success' as const },
+    30: { label: '已遏制', color: 'success' as const },
     40: { label: '已处置', color: 'success' as const },
     50: { label: '已挂起', color: 'default' as const },
     60: { label: '接受风险', color: 'warning' as const },
+    // Backward compatibility for historical data
     70: { label: '已遏制', color: 'success' as const },
   };
-  return statusMap[status] || { label: '未知', color: 'default' as const };
+  if (statusMap[status]) {
+    return statusMap[status];
+  }
+  if (dealAction) {
+    return { label: dealAction, color: 'default' as const };
+  }
+  return { label: `未知(${status})`, color: 'default' as const };
 };
 
 const formatTimestamp = (timestamp: number): string => {
@@ -74,7 +81,7 @@ export const IncidentsListTable: React.FC<IncidentsListTableProps> = ({ incident
           <TableBody>
             {incidents.slice(0, 10).map((incident, index) => {
               const severityInfo = getSeverityInfo(incident.incidentSeverity);
-              const dealStatusInfo = getDealStatusInfo(incident.dealStatus ?? 0);
+              const dealStatusInfo = getDealStatusInfo(incident.dealStatus ?? -1, incident.dealAction);
               return (
                 <TableRow key={incident.uuId} hover>
                   <TableCell>{index + 1}</TableCell>

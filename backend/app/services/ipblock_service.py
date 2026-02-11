@@ -46,6 +46,15 @@ class IpBlockService:
         except ValueError:
             return False
 
+    def _normalize_device_name(self, name: str) -> str:
+        """Normalize device names for tolerant matching."""
+        if not name:
+            return ""
+        normalized = str(name).strip().strip('“”"\'`')
+        normalized = re.sub(r'^\s*(?:设备|防火墙|网关)\s*', '', normalized, flags=re.IGNORECASE)
+        normalized = re.sub(r'\s+', '', normalized)
+        return normalized.lower()
+
     def check_ip_blocked(self, ip_address: str) -> Dict[str, Any]:
         """
         Check if an IP address is already blocked
@@ -312,6 +321,114 @@ class IpBlockService:
             return {
                 "success": False,
                 "devices": [],
+                "error_info": {
+                    "error_type": "system_error",
+                    "friendly_message": "系统错误",
+                    "raw_message": f"Unexpected error: {str(e)}",
+                    "suggestion": "请联系系统管理员",
+                    "actions": ["查看日志", "联系管理员"]
+                }
+            }
+
+    async def search_rules(
+        self,
+        page_size: int = 100,
+        page: int = 1,
+        search_infos: Optional[List[Dict[str, str]]] = None
+    ) -> Dict[str, Any]:
+        """
+        Search IP block rules.
+
+        Args:
+            page_size: Number of records per page
+            page: Page number
+            search_infos: Optional search filters
+
+        Returns:
+            Dict with keys:
+                - success: bool
+                - data: {"item": list, "total": int}
+                - error_info: dict (if error occurred)
+        """
+        try:
+            api_endpoint = f"{self.base_url}/api/xdr/v1/responses/blockiprule/list"
+
+            request_body: Dict[str, Any] = {
+                "pageSize": page_size,
+                "page": page
+            }
+
+            if search_infos:
+                request_body["searchInfos"] = search_infos
+
+            req = requests.Request(
+                "POST",
+                api_endpoint,
+                headers={"content-type": "application/json"},
+                json=request_body
+            )
+
+            if not self.signature:
+                return {
+                    "success": False,
+                    "data": {"item": [], "total": 0},
+                    "error_info": {
+                        "error_type": "auth_error",
+                        "friendly_message": "认证信息未配置",
+                        "raw_message": "Signature not initialized",
+                        "suggestion": "请提供Flux认证信息（auth_code或ak/sk）",
+                        "actions": ["检查认证配置", "联系管理员"]
+                    }
+                }
+
+            self.signature.signature(req)
+
+            session = requests.Session()
+            session.verify = False
+            response = session.send(req.prepare())
+
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("code") == "Success":
+                    data = result.get("data", {}) or {}
+                    items = data.get("item", []) or []
+                    total = data.get("total", len(items))
+                    return {
+                        "success": True,
+                        "data": {
+                            "item": items,
+                            "total": total
+                        }
+                    }
+
+                return {
+                    "success": False,
+                    "data": {"item": [], "total": 0},
+                    "error_info": parse_api_error(response.status_code, response.text)
+                }
+
+            return {
+                "success": False,
+                "data": {"item": [], "total": 0},
+                "error_info": parse_api_error(response.status_code, response.text)
+            }
+
+        except requests.exceptions.RequestException as e:
+            return {
+                "success": False,
+                "data": {"item": [], "total": 0},
+                "error_info": {
+                    "error_type": "network_error",
+                    "friendly_message": "网络请求失败",
+                    "raw_message": f"Request failed: {str(e)}",
+                    "suggestion": "请检查网络连接和API地址配置",
+                    "actions": ["检查网络连接", "检查API地址", "重试"]
+                }
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "data": {"item": [], "total": 0},
                 "error_info": {
                     "error_type": "system_error",
                     "friendly_message": "系统错误",
@@ -642,10 +759,32 @@ class IpBlockService:
 
         # Find the specified device
         target_device = None
+        normalized_requested = self._normalize_device_name(device_name)
+
         for device in devices_result["devices"]:
             if device["device_name"] == device_name:
                 target_device = device
                 break
+
+        if not target_device and normalized_requested:
+            # Tolerant match for quoted/space-variant user input
+            for device in devices_result["devices"]:
+                normalized_device = self._normalize_device_name(device.get("device_name", ""))
+                if not normalized_device:
+                    continue
+                if normalized_device == normalized_requested:
+                    target_device = device
+                    break
+
+        if not target_device and normalized_requested and len(normalized_requested) >= 3:
+            # Last resort: partial match when user input contains extra words
+            for device in devices_result["devices"]:
+                normalized_device = self._normalize_device_name(device.get("device_name", ""))
+                if not normalized_device:
+                    continue
+                if normalized_requested in normalized_device or normalized_device in normalized_requested:
+                    target_device = device
+                    break
 
         if not target_device:
             return {

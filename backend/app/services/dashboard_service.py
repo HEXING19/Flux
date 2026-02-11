@@ -209,7 +209,12 @@ class DashboardService:
                 page_size=1,  # We only need the count
                 page=1
             )
-            return result.get("total", 0)
+
+            if not result.get("success"):
+                return 0
+
+            data = result.get("data") or {}
+            return int(data.get("total", 0) or 0)
         except Exception as e:
             print(f"Error fetching incidents count: {str(e)}")
             return 0
@@ -231,12 +236,17 @@ class DashboardService:
                 base_url=base_url,
                 start_timestamp=start_timestamp,
                 end_timestamp=end_timestamp,
-                min_severity=3,
-                deal_status=0,  # Not handled
-                page_size=100,
+                severities=[3, 4],
+                deal_status=[0],  # Not handled
+                page_size=1,
                 page=1
             )
-            return result.get("total", 0)
+
+            if not result.get("success"):
+                return 0
+
+            data = result.get("data") or {}
+            return int(data.get("total", 0) or 0)
         except Exception as e:
             print(f"Error fetching pending incidents: {str(e)}")
             return 0
@@ -250,15 +260,21 @@ class DashboardService:
         """Fetch count of blocked IPs in the given time range"""
         try:
             ipblock_service = IpBlockService(base_url=base_url, auth_code=auth_code)
-            # Query IP block rules created after start_timestamp
+            # Query block rules and keep only active statuses
             result = await ipblock_service.search_rules(
-                page_size=100,
+                page_size=200,
                 page=1
             )
-            # Filter by creation time (if available in the response)
-            rules = result.get("data", {}).get("item", [])
-            # For now, return total count (can be enhanced with date filtering)
-            return len(rules)
+
+            if not result.get("success"):
+                return 0
+
+            rules = (result.get("data") or {}).get("item", []) or []
+            active_rules = [
+                rule for rule in rules
+                if rule.get("status") in IpBlockService.ACTIVE_BLOCK_STATUSES
+            ]
+            return len(active_rules)
         except Exception as e:
             print(f"Error fetching blocked IPs: {str(e)}")
             return 0
@@ -280,12 +296,15 @@ class DashboardService:
                 base_url=base_url,
                 start_timestamp=start_timestamp,
                 end_timestamp=end_timestamp,
-                min_severity=2,  # Medium and above
+                severities=[3, 4],  # High and critical
                 page_size=limit,
                 page=1
             )
 
-            incidents = result.get("incidents", [])
+            if not result.get("success"):
+                return []
+
+            incidents = (result.get("data") or {}).get("item", []) or []
             return [
                 {
                     "id": inc.get("uuId", ""),

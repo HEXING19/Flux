@@ -243,6 +243,297 @@ class LLMService:
             for key, config in self.providers.items()
         }
 
+    def _extract_incident_uuids_from_text(self, text: str) -> List[str]:
+        """从文本中提取 incident UUID 列表（按出现顺序去重）"""
+        if not text:
+            return []
+
+        pattern = r'incident-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}'
+        matches = re.findall(pattern, text, flags=re.IGNORECASE)
+
+        unique_matches: List[str] = []
+        seen = set()
+        for match in matches:
+            normalized = match.lower()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            unique_matches.append(match)
+
+        return unique_matches
+
+    def _extract_first_incident_uuid_from_text(self, text: str) -> Optional[str]:
+        """从文本中提取第一个 incident UUID"""
+        uuids = self._extract_incident_uuids_from_text(text)
+        return uuids[0] if uuids else None
+
+    def _extract_ipv4s_from_text(self, text: str) -> List[str]:
+        """从文本中提取 IPv4 地址列表（按出现顺序去重）"""
+        if not text:
+            return []
+
+        # Use lookarounds instead of \b so it still matches in Chinese text like “查询1.2.3.4是否封禁”
+        pattern = r'(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)(?![\d.])'
+        matches = re.findall(pattern, text)
+
+        unique_matches: List[str] = []
+        seen = set()
+        for match in matches:
+            if match in seen:
+                continue
+            seen.add(match)
+            unique_matches.append(match)
+
+        return unique_matches
+
+    def _has_referential_ip_phrase(self, text: str) -> bool:
+        """判断文本是否包含“这个IP/该IP”等指代表达"""
+        if not text:
+            return False
+        return bool(re.search(r'(这个IP|该IP|这个ip|该ip|这个地址|该地址|此IP|它)', text))
+
+    def _resolve_recent_ip_from_messages(self, messages: List[Dict[str, str]]) -> Optional[str]:
+        """从最近对话消息中回溯一个可用IP"""
+        for msg in reversed(messages[-20:]):
+            content = msg.get("content", "")
+            ips = self._extract_ipv4s_from_text(content)
+            if ips:
+                return ips[0]
+        return None
+
+    def _normalize_device_name(self, device_name: str) -> str:
+        """归一化设备名称，便于匹配"""
+        if not device_name:
+            return ""
+        normalized = str(device_name).strip().strip('“”"\'`')
+        normalized = re.sub(r'^\s*(?:设备|防火墙|网关)\s*', '', normalized, flags=re.IGNORECASE)
+        normalized = re.sub(r'\s+', '', normalized)
+        return normalized.lower()
+
+    def _sanitize_device_name_candidate(self, candidate: str) -> Optional[str]:
+        """清洗候选设备名称，过滤“这个设备”等无效占位词"""
+        if not candidate:
+            return None
+
+        value = str(candidate).strip().strip('“”"\'`')
+        value = re.sub(r'^\s*(?:设备|防火墙|网关)\s*', '', value, flags=re.IGNORECASE)
+        value = re.sub(r'^\s*(?:这个|该|此)\s*', '', value)
+        value = re.sub(r'\s*(?:封禁|进行封禁|联动封禁|操作)\s*$', '', value, flags=re.IGNORECASE)
+
+        # 英文/编号设备常见“AF_002设备”写法可安全去除后缀
+        if re.fullmatch(r'[A-Za-z0-9_-]{2,80}(?:设备|防火墙|网关)', value):
+            value = re.sub(r'(?:设备|防火墙|网关)$', '', value, flags=re.IGNORECASE)
+
+        value = value.strip().strip('“”"\'`')
+
+        placeholders = {
+            "这个", "该", "此", "它",
+            "设备", "防火墙", "网关",
+            "这个设备", "该设备", "此设备",
+            "这个防火墙", "该防火墙", "此防火墙",
+            "这个网关", "该网关", "此网关",
+        }
+        if re.fullmatch(r'第[一二两三四五六七八九十\d]+个?(?:设备|防火墙|网关)?', value):
+            return None
+
+        if not value or value in placeholders or len(value) < 2:
+            return None
+
+        return value
+
+    def _extract_recent_offered_devices(self, messages: List[Dict[str, str]]) -> List[str]:
+        """从最近助手消息中提取可选设备列表（用于上下文追问）"""
+        seen = set()
+        devices: List[str] = []
+
+        for msg in reversed(messages[-12:]):
+            if msg.get("role") != "assistant":
+                continue
+
+            content = msg.get("content", "")
+            if not content or ("可用防火墙设备" not in content and "可用设备" not in content):
+                continue
+
+            for line in content.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+
+                match = re.match(r'^[•\-\*]\s*(.+?)\s*$', line)
+                if not match:
+                    continue
+
+                cleaned = self._sanitize_device_name_candidate(match.group(1))
+                if not cleaned:
+                    continue
+
+                normalized = self._normalize_device_name(cleaned)
+                if normalized and normalized not in seen:
+                    seen.add(normalized)
+                    devices.append(cleaned)
+
+            if devices:
+                break
+
+        return devices
+
+    def _extract_device_ordinal(self, text: str) -> Optional[int]:
+        """提取“第N个设备”中的序号（1-based）"""
+        if not text:
+            return None
+
+        digit_match = re.search(r'第\s*(\d{1,2})\s*(?:个|台)?(?:设备|防火墙|网关)?', text)
+        if digit_match:
+            try:
+                value = int(digit_match.group(1))
+                return value if value > 0 else None
+            except ValueError:
+                return None
+
+        cn_match = re.search(r'第\s*([零一二两三四五六七八九十]{1,3})\s*(?:个|台)?(?:设备|防火墙|网关)?', text)
+        if not cn_match:
+            return None
+
+        token = cn_match.group(1)
+        mapping = {
+            "零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+            "五": 5, "六": 6, "七": 7, "八": 8, "九": 9
+        }
+        if token == "十":
+            return 10
+        if "十" in token:
+            left, right = token.split("十", 1)
+            tens = mapping.get(left, 1 if left == "" else None)
+            ones = mapping.get(right, 0 if right == "" else None)
+            if tens is None or ones is None:
+                return None
+            value = tens * 10 + ones
+            return value if value > 0 else None
+
+        value = mapping.get(token)
+        return value if value and value > 0 else None
+
+    def _resolve_device_name_from_messages(self, messages: List[Dict[str, str]], user_message: str) -> Optional[str]:
+        """根据最近“可用设备列表”上下文解析设备名称"""
+        devices = self._extract_recent_offered_devices(messages)
+        if not devices:
+            return None
+
+        normalized_user_text = self._normalize_device_name(user_message)
+        for device in devices:
+            normalized_device = self._normalize_device_name(device)
+            if not normalized_device:
+                continue
+            if normalized_device in normalized_user_text:
+                return device
+
+        ordinal = self._extract_device_ordinal(user_message)
+        if ordinal and 1 <= ordinal <= len(devices):
+            return devices[ordinal - 1]
+
+        return None
+
+    def _has_recent_ipblock_prompt(self, messages: List[Dict[str, str]]) -> bool:
+        """判断最近对话是否进入“选择联动设备”阶段"""
+        recent_text = "\n".join(
+            msg.get("content", "")
+            for msg in messages[-10:]
+            if msg.get("role") == "assistant"
+        )
+        if not recent_text:
+            return False
+
+        return bool(re.search(
+            r'(准备执行联动封禁|请先指定防火墙设备名称|可用防火墙设备|使用“.+”封禁这个IP|回复：使用“)',
+            recent_text
+        ))
+
+    def _extract_device_name_from_text(self, text: str) -> Optional[str]:
+        """从文本中提取设备名称（支持中文引号和自然语言短语）"""
+        if not text:
+            return None
+
+        patterns = [
+            r'(?:使用|用|选择|指定)[\s:：]*[“"\'`]([^”"\'`]{2,80})[”"\'`]',
+            r'(?:设备|防火墙|网关)\s*(?:名称)?[\s:：]+([^\s，。,；;]{2,80})',
+            r'(?:使用|用|选择|指定)\s*([^\s，。,；;]{2,80})\s*(?:这个|该)?(?:设备|防火墙|网关)?',
+            r'\b(AF[_-]?\d+|EDR[_-]?\d+|[A-Za-z]+[_-]?\d+)\b',
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                candidate = self._sanitize_device_name_candidate((match.group(1) or "").strip())
+                if candidate:
+                    return candidate
+
+        return None
+
+    def _infer_device_type_from_name(self, device_name: str) -> str:
+        """根据设备名称推断设备类型"""
+        if not device_name:
+            return "AF"
+        if "EDR" in device_name.upper():
+            return "EDR"
+        return "AF"
+
+    def _is_ipblock_direct_intent(self, messages: List[Dict[str, str]], user_message: str) -> bool:
+        """判断是否是明确的IP封禁相关意图（无需依赖LLM意图识别）"""
+        if not user_message:
+            return False
+
+        has_ip = len(self._extract_ipv4s_from_text(user_message)) > 0
+        has_referential_ip = self._has_referential_ip_phrase(user_message)
+        has_recent_ip = bool(self._resolve_recent_ip_from_messages(messages))
+        block_words = bool(re.search(r'(封禁|拉黑|阻断|拦截|解封|放行|黑名单|白名单)', user_message))
+        status_words = bool(re.search(r'(查询|检查|状态|是否被封禁|有没有封禁|封禁情况)', user_message))
+
+        if has_ip and (block_words or status_words):
+            return True
+
+        if has_referential_ip and has_recent_ip and (block_words or status_words):
+            return True
+
+        return False
+
+    def _is_ipblock_followup_intent(self, messages: List[Dict[str, str]], user_message: str) -> bool:
+        """判断是否属于IP封禁的上下文追问（避免落入普通聊天）"""
+        if not user_message:
+            return False
+
+        block_words = bool(re.search(r'(封禁|拉黑|阻断|拦截|解封|放行|黑名单|白名单)', user_message))
+        has_ip = len(self._extract_ipv4s_from_text(user_message)) > 0
+        has_referential_ip = self._has_referential_ip_phrase(user_message)
+        has_recent_ip = bool(self._resolve_recent_ip_from_messages(messages))
+        has_recent_prompt = self._has_recent_ipblock_prompt(messages)
+        direct_device_name = self._extract_device_name_from_text(user_message)
+        context_device_name = self._resolve_device_name_from_messages(messages, user_message)
+        has_device_words = bool(re.search(r'(设备|防火墙|网关|联动)', user_message))
+        has_use_words = bool(re.search(r'(使用|用|选择|指定)', user_message))
+        has_block_status_words = bool(re.search(r'(是否被封禁|封禁状态|封禁情况|查询封禁|检查封禁)', user_message))
+
+        # 显式封禁语义 + IP，直接判定为 ipblock
+        if block_words and has_ip:
+            return True
+        if has_ip and has_block_status_words:
+            return True
+
+        # “封禁这个IP”之类：无显式IP但有历史IP
+        if block_words and has_referential_ip and has_recent_ip:
+            return True
+
+        # “使用某设备/防火墙”追问：只要近期已进入设备选择阶段，直接走ipblock
+        if has_recent_prompt and (direct_device_name or context_device_name):
+            return True
+
+        if has_recent_prompt and has_use_words and has_device_words:
+            return True
+
+        if has_device_words and has_recent_ip and (block_words or has_use_words):
+            return True
+
+        return False
+
     async def chat_with_asset_support(
         self,
         messages: List[Dict[str, str]],
@@ -293,6 +584,14 @@ class LLMService:
             if "确认执行" in user_message or "confirm" in user_message.lower():
                 # 场景确认消息，直接识别为场景意图
                 intent = "daily_high_risk_closure"
+                confidence = 1.0
+            elif self._is_ipblock_direct_intent(messages, user_message):
+                # 明确封禁/查询IP状态，不依赖LLM意图识别
+                intent = "ipblock"
+                confidence = 1.0
+            elif self._is_ipblock_followup_intent(messages, user_message):
+                # 强上下文兜底：设备名追问/代词追问直接走ip封禁
+                intent = "ipblock"
                 confidence = 1.0
             else:
                 # 其他情况，使用LLM进行意图识别
@@ -384,24 +683,32 @@ class LLMService:
         base_url: Optional[str] = None
     ) -> Dict[str, Any]:
         """检测用户意图"""
+        from .skills_registry import get_intent_catalog
+
+        intent_catalog = get_intent_catalog()
+        intent_lines = []
+        allowed_intents = []
+
+        for idx, intent_def in enumerate(intent_catalog, start=1):
+            intent_name = intent_def["intent"]
+            intent_desc = intent_def["description"]
+            intent_lines.append(f"{idx}. {intent_desc} ({intent_name})")
+            allowed_intents.append(f"\"{intent_name}\"")
+
+        # Keep general_chat as explicit fallback
+        intent_lines.append(f"{len(intent_lines) + 1}. 普通聊天 (general_chat) - 其他对话")
+        allowed_intents.append("\"general_chat\"")
+
         intent_prompt = f"""你是一个意图识别助手。判断用户消息的意图类型。
 
 用户消息: {user_message}
 
 分析用户是否想要：
-1. 添加资产 (add_asset) - 添加新资产、创建新服务器、注册新设备
-2. IP封禁 (ipblock) - 查询IP封禁状态、封禁IP地址、检查并封禁IP
-3. 查询安全事件 (get_incidents) - 查询事件列表、查看安全事件、找事件、显示事件
-4. 查看事件详情 (get_incident_proof) - 查看事件详情、查看举证、查看攻击链、查看事件证据
-5. 查看事件外网IP实体 (get_incident_entities) - 查看外网实体、查看IP实体、查看外网IP、查看IP地址列表
-6. 更新事件状态 (update_incident_status) - 标记事件状态、处置事件、修改处置状态、批量更新
-7. 查询日志统计 (get_log_count) - 统计日志数量、查询日志总数、日志统计、日志分布、日志趋势
-8. 每日高危事件闭环 (daily_high_risk_closure) - 执行每日高危事件自动闭环场景、自动处置高危事件
-9. 普通聊天 (general_chat) - 其他对话
+{chr(10).join(intent_lines)}
 
 返回 JSON 格式（只返回 JSON，不要其他内容）:
 {{
-  "intent": "add_asset" | "ipblock" | "get_incidents" | "get_incident_proof" | "get_incident_entities" | "update_incident_status" | "get_log_count" | "daily_high_risk_closure" | "general_chat",
+  "intent": {" | ".join(allowed_intents)},
   "confidence": 0.0-1.0,
   "reasoning": "判断理由"
 }}"""
@@ -646,6 +953,54 @@ class LLMService:
             chat_result["type"] = "text"
             return chat_result
 
+        # 规范化 action：当用户表达“封禁/阻断”意图时，不应回落为仅查询状态
+        action = extracted_params.get("action", "check")
+        has_block_intent = bool(re.search(r'(封禁|拉黑|阻断|拦截|联动封禁|封掉)', user_message))
+        has_status_query_intent = bool(re.search(r'(查询|检查|状态|是否被封禁|有没有封禁|封禁情况)', user_message))
+        has_recent_ipblock_prompt = self._has_recent_ipblock_prompt(messages)
+        if action == "check" and has_block_intent and not has_status_query_intent:
+            action = "check_and_block"
+            extracted_params["action"] = action
+
+        # 优先使用规则提取用户消息中的显式IP（比LLM提取更稳定）
+        direct_ips = self._extract_ipv4s_from_text(user_message)
+        if direct_ips:
+            extracted_params["ip_address"] = direct_ips[0]
+
+        # 清洗LLM提取的设备名称（防止“这个设备”这类无效值）
+        if extracted_params.get("device_name"):
+            cleaned_device_name = self._sanitize_device_name_candidate(str(extracted_params.get("device_name")))
+            if cleaned_device_name:
+                extracted_params["device_name"] = cleaned_device_name
+            else:
+                extracted_params.pop("device_name", None)
+
+        # 设备名称规则提取（避免仅依赖LLM抽取）
+        if not extracted_params.get("device_name"):
+            direct_device_name = self._extract_device_name_from_text(user_message)
+            if direct_device_name:
+                extracted_params["device_name"] = direct_device_name
+                extracted_params["device_type"] = extracted_params.get("device_type") or self._infer_device_type_from_name(direct_device_name)
+
+        # 设备上下文回填：支持“使用第一个设备/使用这个设备”这类追问
+        if not extracted_params.get("device_name"):
+            context_device_name = self._resolve_device_name_from_messages(messages, user_message)
+            if context_device_name:
+                extracted_params["device_name"] = context_device_name
+                extracted_params["device_type"] = extracted_params.get("device_type") or self._infer_device_type_from_name(context_device_name)
+
+        # 处理“封禁这个IP”或“使用某防火墙封禁”这类语句：从最近对话中回溯IP
+        should_resolve_recent_ip = (
+            self._has_referential_ip_phrase(user_message)
+            or action in ["block", "check_and_block"]
+            or bool(extracted_params.get("device_name"))
+            or has_recent_ipblock_prompt
+        )
+        if ("ip_address" not in extracted_params or not extracted_params["ip_address"]) and should_resolve_recent_ip:
+            recent_ip = self._resolve_recent_ip_from_messages(messages)
+            if recent_ip:
+                extracted_params["ip_address"] = recent_ip
+
         # 使用 IpBlockService 验证和处理参数
         from .ipblock_service import IpBlockService
 
@@ -670,8 +1025,52 @@ class LLMService:
             }
 
         # 确定操作类型
-        action = extracted_params.get("action", "check")
         ip_address = extracted_params["ip_address"]
+
+        if action == "check" and has_recent_ipblock_prompt and not has_status_query_intent:
+            action = "check_and_block"
+            extracted_params["action"] = action
+
+        # 若已指定设备但action仍是check，升格为联动封禁流程
+        if action == "check" and extracted_params.get("device_name") and not has_status_query_intent:
+            action = "check_and_block"
+            extracted_params["action"] = action
+
+        # 封禁意图但未提供设备名：先引导用户选择联动防火墙
+        if action in ["block", "check_and_block"] and not extracted_params.get("device_name"):
+            device_type = extracted_params.get("device_type", "AF")
+            devices_result = ipblock_service.get_available_devices(device_type=device_type)
+
+            if devices_result.get("success"):
+                devices = devices_result.get("devices", [])
+                if devices:
+                    online_devices = [d for d in devices if str(d.get("device_status", "")).lower() == "online"]
+                    preferred_devices = online_devices if online_devices else devices
+                    preview_devices = preferred_devices[:8]
+                    device_names = [d.get("device_name", "未知设备") for d in preview_devices if d.get("device_name")]
+
+                    suggestion_name = device_names[0] if device_names else None
+                    device_lines = "\n".join([f"• {name}" for name in device_names]) if device_names else "• 暂无可展示设备"
+                    suffix = f"\n\n例如：使用“{suggestion_name}”封禁这个IP" if suggestion_name else "\n\n请回复：使用“某防火墙名称”封禁这个IP"
+
+                    return {
+                        "success": True,
+                        "type": "text",
+                        "message": f"已定位目标IP：{ip_address}。\n准备执行联动封禁，请先指定防火墙设备名称。\n\n可用防火墙设备：\n{device_lines}{suffix}"
+                    }
+
+                return {
+                    "success": True,
+                    "type": "text",
+                    "message": f"已定位目标IP：{ip_address}，但当前未查询到可用防火墙设备，请先检查联动设备配置。"
+                }
+
+            error_info = devices_result.get("error_info", {})
+            return {
+                "success": True,
+                "type": "text",
+                "message": error_info.get("friendly_message", "查询可用防火墙设备失败，请稍后重试。")
+            }
 
         # 判断是检查还是封禁
         if "device_name" in extracted_params and extracted_params["device_name"]:
@@ -695,8 +1094,52 @@ class LLMService:
                     "status": result["current_status"]
                 }
             elif result["action"] == "need_block":
-                # 需要封禁，返回确认对话框参数
                 block_params = result["block_params"]
+                auto_execute = bool(re.search(r'(封禁|拉黑|阻断|拦截|联动|使用|用)', user_message)) and not has_status_query_intent
+
+                if auto_execute:
+                    # 用户已明确设备，直接执行封禁
+                    block_result = ipblock_service.block_ip(
+                        ip_address=block_params["ip"],
+                        device_id=block_params["device_id"],
+                        device_name=block_params["device_name"],
+                        device_type=block_params.get("device_type", "AF"),
+                        device_version=block_params.get("device_version", ""),
+                        block_type=block_params.get("block_type", "SRC_IP"),
+                        time_type=block_params.get("time_type", "forever"),
+                        time_value=block_params.get("time_value"),
+                        time_unit=block_params.get("time_unit", "d"),
+                        reason=block_params.get("reason", "")
+                    )
+
+                    if block_result.get("success"):
+                        import time
+                        return {
+                            "success": True,
+                            "type": "ipblock_summary",
+                            "message": f"已执行联动封禁：IP {ip_address} -> 设备 {block_params['device_name']}",
+                            "ipblock_summary_data": {
+                                "ip": block_params["ip"],
+                                "device_name": block_params["device_name"],
+                                "device_type": block_params.get("device_type", "AF"),
+                                "block_type": block_params.get("block_type", "SRC_IP"),
+                                "time_type": block_params.get("time_type", "forever"),
+                                "time_value": block_params.get("time_value"),
+                                "time_unit": block_params.get("time_unit", "d"),
+                                "reason": block_params.get("reason", ""),
+                                "rule_count": block_result.get("rule_count", 0),
+                                "timestamp": int(time.time() * 1000)
+                            }
+                        }
+
+                    error_info = block_result.get("error_info", {})
+                    return {
+                        "success": True,
+                        "type": "text",
+                        "message": error_info.get("friendly_message", block_result.get("message", "联动封禁失败"))
+                    }
+
+                # 未明确执行，走确认对话框
                 return {
                     "success": True,
                     "type": "ipblock_confirmation",
@@ -780,6 +1223,11 @@ class LLMService:
 - time_value: 封禁时长数值（当time_type为temporary时必填）
 - time_unit: 时间单位（d=天, h=小时, m=分钟）
 - reason: 封禁原因/备注
+
+解析规则补充：
+- 若用户消息包含明确IP，优先提取该IP
+- 若用户说“这个IP/该IP/这个地址”等指代词，请从对话历史中选择最近提及的IP作为 ip_address
+- 若既无明确IP也无法从历史定位，则返回 null
 
 返回 JSON 格式（只返回 JSON，不要其他内容）:
 {{
@@ -922,19 +1370,24 @@ class LLMService:
         flux_base_url: Optional[str] = None
     ) -> Dict[str, Any]:
         """处理查看事件举证意图"""
-        try:
-            # 提取事件ID
-            extracted_params = await self._extract_incident_proof_params(
-                user_message, messages, provider, api_key, base_url
-            )
-        except Exception as e:
-            # 参数提取失败，按普通聊天处理
-            chat_result = await self.chat(messages, provider, api_key, base_url)
-            chat_result["type"] = "text"
-            return chat_result
+        # 优先使用正则直接提取，避免上下文序号场景完全依赖 LLM
+        uuid = self._extract_first_incident_uuid_from_text(user_message)
+        name = None
 
-        uuid = extracted_params.get("uuid")
-        name = extracted_params.get("name")
+        if not uuid:
+            try:
+                # 提取事件ID
+                extracted_params = await self._extract_incident_proof_params(
+                    user_message, messages, provider, api_key, base_url
+                )
+            except Exception as e:
+                # 参数提取失败，按普通聊天处理
+                chat_result = await self.chat(messages, provider, api_key, base_url)
+                chat_result["type"] = "text"
+                return chat_result
+
+            uuid = extracted_params.get("uuid")
+            name = extracted_params.get("name")
 
         # If name is provided but no UUID, search for it
         if not uuid and name:
@@ -1013,19 +1466,24 @@ class LLMService:
         flux_base_url: Optional[str] = None
     ) -> Dict[str, Any]:
         """处理查看事件外网IP实体意图"""
-        try:
-            # 提取事件ID
-            extracted_params = await self._extract_incident_entities_params(
-                user_message, messages, provider, api_key, base_url
-            )
-        except Exception as e:
-            # 参数提取失败，按普通聊天处理
-            chat_result = await self.chat(messages, provider, api_key, base_url)
-            chat_result["type"] = "text"
-            return chat_result
+        # 优先使用正则直接提取，避免上下文序号场景完全依赖 LLM
+        uuid = self._extract_first_incident_uuid_from_text(user_message)
+        name = None
 
-        uuid = extracted_params.get("uuid")
-        name = extracted_params.get("name")
+        if not uuid:
+            try:
+                # 提取事件ID
+                extracted_params = await self._extract_incident_entities_params(
+                    user_message, messages, provider, api_key, base_url
+                )
+            except Exception as e:
+                # 参数提取失败，按普通聊天处理
+                chat_result = await self.chat(messages, provider, api_key, base_url)
+                chat_result["type"] = "text"
+                return chat_result
+
+            uuid = extracted_params.get("uuid")
+            name = extracted_params.get("name")
 
         # If name is provided but no UUID, search for it
         if not uuid and name:
@@ -1112,6 +1570,8 @@ class LLMService:
         flux_base_url: Optional[str] = None
     ) -> Dict[str, Any]:
         """处理更新事件状态意图"""
+        direct_uuids = self._extract_incident_uuids_from_text(user_message)
+
         try:
             # 提取更新参数
             extracted_params = await self._extract_update_status_params(
@@ -1123,7 +1583,7 @@ class LLMService:
             chat_result["type"] = "text"
             return chat_result
 
-        uuids = extracted_params.get("uuids", [])
+        uuids = direct_uuids or extracted_params.get("uuids", [])
         name = extracted_params.get("name")
         deal_status = extracted_params.get("deal_status")
         deal_comment = extracted_params.get("deal_comment", "处置完成")
@@ -1197,6 +1657,7 @@ class LLMService:
             status_names = {
                 0: "待处置",
                 10: "处置中",
+                30: "已遏制",
                 40: "已处置",
                 50: "已挂起",
                 60: "接受风险",
@@ -1280,7 +1741,7 @@ class LLMService:
   • 切勿设置为startTime（会导致按最早发生时间筛选，可能查不到事件）
 
 - severities: 严重等级数组（1=低危, 2=中危, 3=高危, 4=严重）
-- dealStatus: 处置状态数组（0=未处置, 10=处置中, 40=已处置, 50=已挂起, 60=接受风险, 70=已遏制）
+- dealStatus: 处置状态数组（0=未处置, 10=处置中, 30=已遏制, 40=已处置, 50=已挂起, 60=接受风险, 70=已遏制(兼容)）
 - name: 事件名称（用于客户端过滤，如 "主机存在挖矿病毒"）
 - pageSize: 每页条数（默认20，建议当有name过滤时增加到100-200）
 - page: 页码（默认1）
@@ -1586,7 +2047,7 @@ class LLMService:
    - 通常是引号内的文本，如 "更改'主机存在Struts2-048远程命令执行漏洞（CVE-2017-9791）（企图）'事件处置状态"
    - 事件名称可能完整或部分匹配
 
-3. **deal_status**: 处置状态（0=待处置, 10=处置中, 40=已处置, 50=已挂起, 60=接受风险, 70=已遏制）
+3. **deal_status**: 处置状态（0=待处置, 10=处置中, 30=已遏制, 40=已处置, 50=已挂起, 60=接受风险, 70=已遏制(兼容)）
 4. **deal_comment**: 操作备注/说明
 
 状态映射规则：
@@ -1594,7 +2055,7 @@ class LLMService:
 - "处置中" / "处理中" / "进行中" / "in progress" → 10
 - "已挂起" / "暂停" / "挂起" / "suspended" → 50
 - "接受风险" / "风险接受" / "accept risk" → 60
-- "已遏制" / "已控制" / "contained" → 70
+- "已遏制" / "已控制" / "contained" → 30
 - "未处置" / "待处置" / "pending" → 0
 
 返回 JSON 格式（只返回 JSON，不要其他内容）:
@@ -1992,11 +2453,14 @@ class LLMService:
             )
 
             if result.get("success"):
+                scenario_result = result.get("results", {}) or {}
+                scenario_result["partial_success"] = bool(result.get("partial_success", False))
+
                 return {
                     "success": True,
                     "type": "scenario_completed",
                     "message": result.get("message", "场景执行完成"),
-                    "scenario_result": result.get("results", {})
+                    "scenario_result": scenario_result
                 }
             else:
                 return {

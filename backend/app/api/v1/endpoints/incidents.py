@@ -56,8 +56,8 @@ class IncidentListRequest(BaseModel):
     def validate_deal_status(cls, v):
         if v is not None:
             for status in v:
-                if status not in [0, 10, 40, 50, 60, 70]:
-                    raise ValueError(f"Invalid dealStatus: {status}. Must be one of: 0, 10, 40, 50, 60, 70")
+                if status not in [0, 10, 30, 40, 50, 60, 70]:
+                    raise ValueError(f"Invalid dealStatus: {status}. Must be one of: 0, 10, 30, 40, 50, 60, 70")
         return v
 
 
@@ -78,7 +78,7 @@ class IncidentProofResponse(BaseModel):
 class IncidentUpdateRequest(BaseModel):
     """Request model for updating incident status"""
     uuIds: List[str] = Field(..., min_items=1, max_items=200, description="Incident ID list")
-    dealStatus: int = Field(..., description="Disposition status [0, 10, 40, 50, 60, 70]")
+    dealStatus: int = Field(..., description="Disposition status [0, 10, 30, 40, 50, 60, 70]")
     dealComment: Optional[str] = Field(None, max_length=2048, description="Operation remarks")
 
     @validator('uuIds', each_item=True)
@@ -92,7 +92,7 @@ class IncidentUpdateRequest(BaseModel):
 
     @validator('dealStatus')
     def validate_deal_status(cls, v):
-        valid_statuses = [0, 10, 40, 50, 60, 70]
+        valid_statuses = [0, 10, 30, 40, 50, 60, 70]
         if v not in valid_statuses:
             raise ValueError(f"Invalid dealStatus. Must be one of: {valid_statuses}")
         return v

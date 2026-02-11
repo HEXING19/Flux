@@ -181,7 +181,7 @@ export interface ScenarioConfirmResponse {
   partial_success?: boolean;
   results: {
     ip_block: IPBlockResult;
-    incident_update: IncidentUpdateResult;
+    incident_updates: IncidentUpdateResult;
   };
 }
 

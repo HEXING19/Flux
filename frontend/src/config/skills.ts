@@ -2,7 +2,7 @@ import type { SkillMetadata } from '../types/skill';
 
 /**
  * Skills configuration for the Flux AI assistant
- * Contains metadata for all 6 supported skills
+ * Local fallback metadata (backend `/api/v1/llm/skills` is the primary source)
  */
 export const SKILLS_CONFIG: SkillMetadata[] = [
   {
@@ -131,6 +131,43 @@ export const SKILLS_CONFIG: SkillMetadata[] = [
     ],
     color: '#0288d1',
     order: 6,
+  },
+  {
+    id: 'get-log-count',
+    name: '日志统计分析',
+    nameEn: 'Network Log Analytics',
+    description: '统计网络安全日志数量，支持趋势、分布、异常分析',
+    icon: '📈',
+    category: 'network',
+    capabilities: [
+      { title: '总量统计', description: '按时间范围统计日志总数' },
+      { title: '趋势对比', description: '支持环比上周、上月' },
+      { title: '分布分析', description: '按严重度、访问方向、产品类型分布' },
+    ],
+    examplePrompts: [
+      { chinese: '统计最近7天日志总量', english: 'Count logs in the last 7 days' },
+      { chinese: '分析本周日志趋势和分布', english: 'Analyze weekly log trends and distributions' },
+    ],
+    color: '#1565c0',
+    order: 7,
+  },
+  {
+    id: 'daily-high-risk-closure',
+    name: '每日高危事件闭环',
+    nameEn: 'Daily High-Risk Closure',
+    description: '自动分析今日高危事件并联动封禁与处置',
+    icon: '🛡️',
+    category: 'general',
+    capabilities: [
+      { title: '自动编排', description: '查询、分析、确认、执行四步闭环' },
+      { title: '联动处置', description: '批量封禁威胁IP并更新事件状态' },
+    ],
+    examplePrompts: [
+      { chinese: '执行每日高危事件闭环场景', english: 'Run daily high-risk closure scenario' },
+      { chinese: '启动自动处置高危事件', english: 'Start automatic high-risk incident response' },
+    ],
+    color: '#455a64',
+    order: 8,
   },
 ];
 

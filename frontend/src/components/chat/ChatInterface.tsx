@@ -124,6 +124,219 @@ export const ChatInterface = () => {
     };
   }, []);
 
+  const INCIDENT_CONTEXT_LIMIT = 20;
+  const IP_CONTEXT_LIMIT = 10;
+
+  const compactText = (value: string, maxLength: number = 80): string => {
+    const compact = (value || '').replace(/\s+/g, ' ').trim();
+    if (!compact) return '未知';
+    if (compact.length <= maxLength) return compact;
+    return `${compact.slice(0, maxLength)}...`;
+  };
+
+  const normalizeAssistantText = (value: string): string => {
+    if (!value) return '';
+    return value
+      .replace(/\*\*(.*?)\*\*/g, '$1')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/^\s*[\*\-]\s+/gm, '• ');
+  };
+
+  const parseOrdinalToken = (token: string): number | null => {
+    const cleaned = token.replace(/\s+/g, '');
+    if (!cleaned) return null;
+    if (/^\d+$/.test(cleaned)) {
+      const n = parseInt(cleaned, 10);
+      return n > 0 ? n : null;
+    }
+
+    const chineseDigitMap: Record<string, number> = {
+      零: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9,
+    };
+
+    if (cleaned === '十') return 10;
+    if (cleaned.includes('十')) {
+      const [left, right] = cleaned.split('十');
+      const tens = left ? chineseDigitMap[left] : 1;
+      const ones = right ? chineseDigitMap[right] : 0;
+      if (tens === undefined || ones === undefined) return null;
+      const num = tens * 10 + ones;
+      return num > 0 ? num : null;
+    }
+
+    const num = chineseDigitMap[cleaned];
+    return num === undefined || num <= 0 ? null : num;
+  };
+
+  const extractIncidentOrdinal = (text: string): number | null => {
+    const patterns = [
+      /序号\s*([0-9]{1,3})/i,
+      /第\s*([0-9]{1,3})\s*(?:个|条)?(?:事件|告警)?/i,
+      /第\s*([零一二两三四五六七八九十]{1,3})\s*(?:个|条)?(?:事件|告警)?/,
+    ];
+
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match && match[1]) {
+        return parseOrdinalToken(match[1]);
+      }
+    }
+
+    return null;
+  };
+
+  const shouldInjectIncidentContext = (text: string): boolean => {
+    return /(事件|告警|外网实体|外网IP|IP实体|举证|处置状态|处置|序号|第\s*[零一二两三四五六七八九十0-9]+\s*(个|条)?)/i.test(text);
+  };
+
+  const extractIPv4s = (text: string): string[] => {
+    if (!text) return [];
+    // Avoid \b because Chinese characters are word chars in Unicode and may break boundaries.
+    const ipRegex = /(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)(?![\d.])/g;
+    const matches = text.match(ipRegex) || [];
+    return [...new Set(matches)];
+  };
+
+  const shouldInjectIpContext = (text: string): boolean => {
+    return /(IP|ip|地址|封禁|解封|拉黑|放行|阻断|外网实体|外网IP|IP实体|防火墙|设备|联动)/i.test(text);
+  };
+
+  const isReferentialIpQuery = (text: string): boolean => {
+    return /(这个IP|该IP|这个ip|该ip|这个地址|该地址|此IP|它)/.test(text);
+  };
+
+  const extractIpsFromMessage = (message: Message): string[] => {
+    const result: string[] = [];
+    result.push(...extractIPv4s(message.content || ''));
+
+    if (message.type === 'incident_entities' && message.data) {
+      const entities = (message.data as any)?.item;
+      if (Array.isArray(entities)) {
+        for (const entity of entities) {
+          if (entity?.ip && typeof entity.ip === 'string') {
+            result.push(entity.ip);
+          }
+        }
+      }
+    }
+
+    if (message.type === 'ipblock_summary' && message.data) {
+      const ip = (message.data as any)?.ip;
+      if (ip && typeof ip === 'string') {
+        result.push(ip);
+      }
+    }
+
+    return [...new Set(result)];
+  };
+
+  const collectRecentIps = (history: Message[], limit: number = IP_CONTEXT_LIMIT): string[] => {
+    const collected: string[] = [];
+    const seen = new Set<string>();
+
+    for (let i = history.length - 1; i >= 0; i--) {
+      const ips = extractIpsFromMessage(history[i]);
+      for (const ip of ips) {
+        if (seen.has(ip)) continue;
+        seen.add(ip);
+        collected.push(ip);
+        if (collected.length >= limit) {
+          return collected;
+        }
+      }
+    }
+
+    return collected;
+  };
+
+  const getLatestIncidentsData = (history: Message[]): IncidentsListData | null => {
+    for (let i = history.length - 1; i >= 0; i--) {
+      const msg = history[i];
+      if (msg.role !== 'assistant' || msg.type !== 'incidents_list') continue;
+      const incidentsData = msg.data as IncidentsListData | undefined;
+      if (incidentsData && Array.isArray(incidentsData.items) && incidentsData.items.length > 0) {
+        return incidentsData;
+      }
+    }
+    return null;
+  };
+
+  const buildRequestMessages = (history: Message[], currentUserMessage: Message): Message[] => {
+    const baseMessages = [...history, currentUserMessage];
+    let enrichedUserMessage = currentUserMessage;
+    const contextMessages: Message[] = [];
+    const resolutionLines: string[] = [];
+
+    if (shouldInjectIncidentContext(currentUserMessage.content)) {
+      const incidentsData = getLatestIncidentsData(history);
+      if (incidentsData) {
+        const limitedItems = incidentsData.items.slice(0, INCIDENT_CONTEXT_LIMIT);
+        const incidentContextLines = [
+          '【会话上下文-最近一次安全事件列表】',
+          `共 ${incidentsData.items.length} 条，以下展示前 ${limitedItems.length} 条用于序号引用：`,
+          ...limitedItems.map((item, index) =>
+            `序号${index + 1}: uuId=${item.uuId}; 名称=${compactText(item.name)}; 严重等级=${item.incidentSeverity}; 处置状态=${item.dealStatus}`
+          ),
+        ];
+
+        const ordinal = extractIncidentOrdinal(currentUserMessage.content);
+        if (ordinal !== null) {
+          const target = incidentsData.items[ordinal - 1];
+          if (target && target.uuId) {
+            resolutionLines.push(`【系统序号解析】用户提到的序号${ordinal}对应事件ID=${target.uuId}，事件名称=${compactText(target.name)}`);
+          } else {
+            incidentContextLines.push(`【系统序号解析】用户提到序号${ordinal}，但超出当前列表范围（1-${incidentsData.items.length}）。`);
+          }
+        }
+
+        contextMessages.push({
+          id: `ctx-incident-${Date.now()}`,
+          role: 'assistant',
+          content: incidentContextLines.join('\n'),
+          timestamp: new Date(),
+          type: 'text',
+        });
+      }
+    }
+
+    if (shouldInjectIpContext(currentUserMessage.content)) {
+      const recentIps = collectRecentIps(history, IP_CONTEXT_LIMIT);
+      if (recentIps.length > 0) {
+        const ipContextLines = [
+          '【会话上下文-最近IP上下文】',
+          `最近识别到 ${recentIps.length} 个IP（按时间倒序）：${recentIps.join(', ')}`,
+        ];
+
+        const explicitIps = extractIPv4s(currentUserMessage.content);
+        const hasDeviceFollowupIntent = /(使用|用|选择|指定).*(设备|防火墙|网关)|(设备|防火墙|网关).*(封禁|阻断|拦截|拉黑)/.test(currentUserMessage.content);
+        if (explicitIps.length === 0 && (isReferentialIpQuery(currentUserMessage.content) || hasDeviceFollowupIntent)) {
+          resolutionLines.push(`【系统IP解析】用户提到“这个IP”，解析为最近上下文IP=${recentIps[0]}`);
+        }
+
+        contextMessages.push({
+          id: `ctx-ip-${Date.now()}`,
+          role: 'assistant',
+          content: ipContextLines.join('\n'),
+          timestamp: new Date(),
+          type: 'text',
+        });
+      }
+    }
+
+    if (resolutionLines.length > 0) {
+      enrichedUserMessage = {
+        ...currentUserMessage,
+        content: `${currentUserMessage.content}\n\n${resolutionLines.join('\n')}`,
+      };
+    }
+
+    if (contextMessages.length === 0) {
+      return baseMessages;
+    }
+
+    return [...history, ...contextMessages, enrichedUserMessage];
+  };
+
   const handleNewChat = () => {
     const newConversationId = Date.now().toString();
     setConversationId(newConversationId);
@@ -163,6 +376,7 @@ export const ChatInterface = () => {
       // 获取Flux认证信息
       const fluxAuthCode = localStorage.getItem('flux_auth_code');
       const fluxBaseUrl = localStorage.getItem('flux_base_url');
+      const requestMessages = buildRequestMessages(messages, userMessage);
 
       // 调用后端API
       const response = await fetch('http://localhost:8000/api/v1/llm/chat', {
@@ -171,7 +385,7 @@ export const ChatInterface = () => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          messages: [...messages, userMessage].map(m => ({
+          messages: requestMessages.map(m => ({
             role: m.role,
             content: m.content,
           })),
@@ -228,6 +442,17 @@ export const ChatInterface = () => {
           data: data.status,
         };
         setMessages((prev) => [...prev, statusMessage]);
+      } else if (data.type === 'ipblock_summary' && data.ipblock_summary_data) {
+        // 直接执行封禁后的摘要结果
+        const summaryMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: data.message || 'IP封禁执行结果',
+          timestamp: new Date(),
+          type: 'ipblock_summary',
+          data: data.ipblock_summary_data,
+        };
+        setMessages((prev) => [...prev, summaryMessage]);
       } else if (data.type === 'incidents_list' && data.incidents_data) {
         // 显示安全事件列表
         const incidentsMessage: Message = {
@@ -893,6 +1118,10 @@ export const ChatInterface = () => {
 
       const data = await response.json();
 
+      if (data.type !== 'scenario_completed' || !data.scenario_result) {
+        throw new Error(data.message || '场景执行失败');
+      }
+
       // 解析执行结果
       let executionStatus: 'success' | 'partial_success' | 'error' = 'success';
       const resultData = data.scenario_result;
@@ -1141,21 +1370,25 @@ export const ChatInterface = () => {
                             </ListItem>
                           )}
                           <ListItem>
-                            {(message.data as any).incident_update?.success ? (
+                            {(message.data as any).incident_updates?.failed === 0 ? (
                               <CheckCircle color="success" sx={{ mr: 1 }} />
                             ) : (
                               <Error color="error" sx={{ mr: 1 }} />
                             )}
                             <ListItemText
-                              primary={`事件处置: ${(message.data as any).incident_update?.success ? '成功' : '失败'}`}
-                              secondary={(message.data as any).incident_update?.message}
+                              primary={`事件处置: ${(message.data as any).incident_updates?.failed === 0 ? '成功' : '部分失败'}`}
+                              secondary={
+                                (message.data as any).incident_updates
+                                  ? `总计: ${(message.data as any).incident_updates.total} | 成功: ${(message.data as any).incident_updates.success} | 失败: ${(message.data as any).incident_updates.failed}`
+                                  : undefined
+                              }
                             />
                           </ListItem>
                         </List>
                       </Box>
                     ) : (
-                      <Typography variant="body2" sx={{ lineHeight: 1.6 }}>
-                        {message.content}
+                      <Typography variant="body2" sx={{ lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+                        {message.role === 'assistant' ? normalizeAssistantText(message.content) : message.content}
                       </Typography>
                     )}
                   </Paper>
